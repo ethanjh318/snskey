@@ -1,2213 +1,713 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useRef, useState } from "react";
+
+type Direction = "UP" | "DOWN" | "LEFT" | "RIGHT";
+type Point = { x: number; y: number };
+type PadPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
 const GRID_SIZE = 20;
-const INITIAL_SPEED = 300;
-const HUNTER_SCORE = 360;        // score at which the hunter snake appears
-const HUNTER_SPEED_MULT = 1.3;   // hunter travels 0.3x faster than the player
-const HUNTER_MAX_LENGTH = 10;
-const HUNTER_KILL_BONUS = 50;
-const OBSTACLE_INTERVAL = 60;    // seconds of play between new obstacles
-const MAX_OBSTACLE_CELLS = 30;
-const GRID_RED = '#dc2626';
-const SAVE_KEY = 'snake-save-v1';
-const DIRS = [
-  { x: 1, y: 0 },
-  { x: -1, y: 0 },
-  { x: 0, y: 1 },
-  { x: 0, y: -1 }
+const CELL_SIZE = 24;
+const INITIAL_SNAKE: Point[] = [
+  { x: 10, y: 10 },
+  { x: 9, y: 10 },
+  { x: 8, y: 10 },
 ];
 
-const mk = (light, base, dark, name) => ({
-  name,
-  base,
-  light,
-  dark,
-  gradient: `radial-gradient(circle, ${light} 0%, ${base} 70%, ${dark} 100%)`
-});
-
-// Pick black or white arrow text depending on how bright the button color is
-const readableText = (hex) => {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.substring(0, 2), 16);
-  const g = parseInt(h.substring(2, 4), 16);
-  const b = parseInt(h.substring(4, 6), 16);
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.6 ? '#111827' : '#ffffff';
+const REDEEM_CODES: Record<string, { type: "points" | "skin"; amount?: number; skin?: string }> = {
+  "300POINTS": { type: "points", amount: 300 },
+  "620POINTS": { type: "points", amount: 620 },
+  "AURORA-SECRET": { type: "skin", skin: "aurora" },
 };
 
-const SNAKE_COLORS = {
-  red: mk('#fca5a5', '#ef4444', '#dc2626', 'Red'),
-  orange: mk('#fdba74', '#f97316', '#ea580c', 'Orange'),
-  yellow: mk('#fde047', '#eab308', '#ca8a04', 'Yellow'),
-  lime: mk('#d9f99d', '#84cc16', '#65a30d', 'Lime'),
-  green: mk('#86efac', '#22c55e', '#16a34a', 'Green'),
-  teal: mk('#5eead4', '#14b8a6', '#0d9488', 'Teal'),
-  cyan: mk('#a5f3fc', '#06b6d4', '#0891b2', 'Cyan'),
-  blue: mk('#7dd3fc', '#0ea5e9', '#0284c7', 'Blue'),
-  purple: mk('#c4b5fd', '#a855f7', '#9333ea', 'Purple'),
-  pink: mk('#f9a8d4', '#ec4899', '#db2777', 'Pink'),
-  gold: mk('#fef3c7', '#f59e0b', '#b45309', 'Gold'),
-  silver: mk('#f3f4f6', '#9ca3af', '#6b7280', 'Silver')
+const PAD_POSITIONS: Record<PadPosition, { top?: number; bottom?: number; left?: number; right?: number }> = {
+  "top-left": { top: 24, left: 24 },
+  "top-right": { top: 24, right: 24 },
+  "bottom-left": { bottom: 24, left: 24 },
+  "bottom-right": { bottom: 24, right: 24 },
 };
 
-const FRUIT_COLORS = {
-  red: { name: 'Apple Red', color: '#ef4444' },
-  orange: { name: 'Orange', color: '#f97316' },
-  yellow: { name: 'Banana', color: '#facc15' },
-  green: { name: 'Lime', color: '#22c55e' },
-  blue: { name: 'Blueberry', color: '#3b82f6' },
-  purple: { name: 'Grape', color: '#a855f7' },
-  pink: { name: 'Dragonfruit', color: '#ec4899' }
-};
+function getRandomFood(snake: Point[]): Point {
+  const occupied = new Set(snake.map((segment) => `${segment.x},${segment.y}`));
+  const cells: Point[] = [];
 
-const OBSTACLE_COLORS = {
-  white: mk('#ffffff', '#e5e5e5', '#d4d4d4', 'White'),
-  gray: mk('#d1d5db', '#6b7280', '#374151', 'Gray'),
-  black: mk('#6b7280', '#1f2937', '#000000', 'Black'),
-  red: mk('#fca5a5', '#b91c1c', '#7f1d1d', 'Crimson'),
-  orange: mk('#fdba74', '#c2410c', '#7c2d12', 'Rust'),
-  brown: mk('#d6b48a', '#92400e', '#451a03', 'Brown'),
-  navy: mk('#93c5fd', '#1e3a8a', '#172554', 'Navy'),
-  magenta: mk('#f0abfc', '#c026d3', '#86198f', 'Magenta')
-};
-
-// Store skins. Price is paid by spending points from the bank.
-const SKINS = {
-  classic: { name: 'Classic', price: 0, desc: 'The original glowing look. Uses your snake color.' },
-  striped: { name: 'Striped', price: 60, desc: 'Diagonal stripes. Uses your snake color.' },
-  checker: { name: 'Checkerboard', price: 120, desc: 'Two-tone tiles. Uses your snake color.' },
-  neon: { name: 'Neon', price: 200, desc: 'Dark body with a bright glowing outline. Uses your snake color.' },
-  rainbow: { name: 'Rainbow', price: 300, desc: 'Every segment shifts hue along the body.' },
-  frost: { name: 'Frost', price: 400, desc: 'Icy white and blue scales.' },
-  lava: { name: 'Lava', price: 400, desc: 'Molten orange segments that alternate in heat.' },
-  galaxy: { name: 'Galaxy', price: 600, desc: 'Deep purple space with tiny stars.' },
-  royal: { name: 'Royal Gold', price: 800, desc: 'Polished gold plating.' }
-};
-
-const skinStyle = (key, i, c, cs, dark, g = 1) => {
-  // g is the glow multiplier: 0 turns glow off
-  const glow = (rgba) => (g === 0 ? 'none' : `0 0 ${cs * 0.4 * g}px ${cs * 0.2 * g}px ${rgba}`);
-  const classicShadow = glow(hexToRgba(c.base, dark ? 0.5 : 0.35));
-  switch (key) {
-    case 'striped':
-      return {
-        background: `repeating-linear-gradient(45deg, ${c.base} 0px, ${c.base} 5px, ${c.dark} 5px, ${c.dark} 10px)`,
-        border: '2px solid #000',
-        boxShadow: classicShadow
-      };
-    case 'checker':
-      return {
-        background: `conic-gradient(${c.light} 25%, ${c.dark} 0 50%, ${c.light} 0 75%, ${c.dark} 0)`,
-        backgroundSize: `${Math.max(cs / 2, 6)}px ${Math.max(cs / 2, 6)}px`,
-        border: '2px solid #000',
-        boxShadow: classicShadow
-      };
-    case 'neon':
-      return {
-        background: '#050505',
-        border: `2px solid ${c.light}`,
-        boxShadow: g === 0 ? 'none' : `0 0 ${cs * 0.5 * g}px ${c.base}, inset 0 0 ${cs * 0.3 * g}px ${c.base}`
-      };
-    case 'rainbow': {
-      const hue = (i * 45) % 360;
-      return {
-        background: `radial-gradient(circle, hsl(${hue}, 100%, 75%) 0%, hsl(${hue}, 90%, 55%) 70%, hsl(${hue}, 90%, 40%) 100%)`,
-        border: '2px solid #000',
-        boxShadow: glow(`hsla(${hue}, 90%, 55%, 0.45)`)
-      };
-    }
-    case 'frost':
-      return {
-        background: 'radial-gradient(circle, #ffffff 0%, #a5f3fc 55%, #0284c7 100%)',
-        border: '2px solid #0c4a6e',
-        boxShadow: glow('rgba(125, 211, 252, 0.55)')
-      };
-    case 'lava':
-      return {
-        background: i % 2 === 0
-          ? 'radial-gradient(circle, #fde047 0%, #f97316 55%, #7f1d1d 100%)'
-          : 'radial-gradient(circle, #fb923c 0%, #dc2626 55%, #450a0a 100%)',
-        border: '2px solid #000',
-        boxShadow: glow('rgba(249, 115, 22, 0.55)')
-      };
-    case 'galaxy':
-      return {
-        background:
-          'radial-gradient(circle at 25% 30%, #ffffff 0 1px, transparent 2px), radial-gradient(circle at 72% 68%, #ffffff 0 1px, transparent 2px), radial-gradient(circle at 40% 40%, #7c3aed 0%, #3b0764 55%, #0f0a2e 100%)',
-        border: '2px solid #000',
-        boxShadow: glow('rgba(124, 58, 237, 0.5)')
-      };
-    case 'royal':
-      return {
-        background: 'linear-gradient(135deg, #fef3c7 0%, #f59e0b 42%, #b45309 58%, #fde68a 100%)',
-        border: '2px solid #78350f',
-        boxShadow: glow('rgba(251, 191, 36, 0.55)')
-      };
-    default:
-      return { background: c.gradient, border: '2px solid #000', boxShadow: classicShadow };
-  }
-};
-
-const GLOW_LEVELS = { off: 0, low: 0.5, normal: 1, high: 1.8 };
-const ROUNDNESS = { square: 0, soft: 22, round: 38, circle: 50 };
-
-// Background textures (embedded so the artifact is self-contained)
-const BACKGROUNDS = {
-  wardenwood_leaves: { name: 'Wardenwood Leaves', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABSklEQVR4nH2TIUzDQBSG/9eMIClZN1vZppKkSYOqQWHWICsm6yghmSyGoFDMISuQZNNglhBIkybIZZNY2EKRBHGo111v1z1193L//7737o4Ojk8EAJh+gLaoyqJe/32vAAB7hxYAwDD9YKdYZ85i0w9Aw/lC6ESz+4dWkteXJ5xeXiFMYtDk80trMF2tAQC55xIA2Gkm2MD0A4RJjIHVhSGLon6Pon6PAGBgdes8U+paNcZiv5FgIiZQW1RNjHP6rZGH84W4uBnXYjnCJNZ1uhkiD60qi7rKx9016SgaBPKGhyTfO7c0cpyGMPdcyj2XOnJ1New0E9zO7XJZn5PJOiPHwUwjZoqpdHWqee65RHaaCZ0Q2DxbDn6BAPDz9kx2monGDORKqljN8R/aMgCAo8ljo9qu0Bq8R2dbyDqKqixAbd9ZnoUqlo3/AW94lVs55dnCAAAAAElFTkSuQmCC' },
-  bloomrift_moss_block: { name: 'Bloomrift Moss Block', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABKElEQVR4nJWSMWrDQBBFv4RJUOPGpUBEOYNE1CWQHMBNTpFGpPItrCanMASljyDlLvYZImGzpZttTNwoxWaU8WrXJA8E2tnRnz8zCpY72dfrDbpG4rBViJIYV/c3mOcZbOr1Znin+wlPiJLYmXyO4Pb1peeBrpHORHJVTE2RRfM2dkCJ1I4NfcwJeUXed5TEJ4+LrpHGQddIlIsnUyEH6p8YHyavXrQXQ6uhbdW2WUzjISa0gtAKd58rAMBhqxDS2gihjWCXPZ+ciXKfAjCzipIYwXIne+DvayM+rh9RzVqE3LJvoK7VivSIcp8itC98IiMBrSDS468A3z3/YXzQLCZCq3/3DwDVrAU0xi244FuycQqQo/L9EvM8OzsLrwOhFaqHr+HsE/kG+N5+NcyS4OwAAAAASUVORK5CYII=' },
-  gloomcap_block: { name: 'Gloomcap Block', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABTUlEQVR4nI2SsUvDQBTGf6lXCkKwLXWviyBCYjpVQQQd3Z2DguDgf5H/oIMgiEF3N0edS4em6ZDBKXulLTgWiUN68XK9it9079777n3vu2ftbe5njWoTr+7RbXfQ0U+Hxfl98raSF5L8F1GiUW0yW0yLM4D1fBJm/yFH86gU3xxc5Qoc3y0lxmG8QtAVenUPyRMqydTZ1F1yHN/NR+inQ6J5xGwxRfdknRJpuOinQ5JBQA1g57AwSYV8WCVKtQKg17IBuF4W6Wgo9/qY1tHWcQa/rpqKTJCjVVTJju8W7pqM08mzxRRxun1WSo7DOJ8zXd9dNdOKH6NsHMYl2d12B8d3Md2ragEqaiClyVhfMn1MACGXSCIZBGy0bL6fRkb5er24Gz0AUPt45X75nXphMghyhbvnKw8KuSS9ls3t5xeXFy+lgm67Q6LE+qL9AMarlLViDTUNAAAAAElFTkSuQmCC' },
-  nectar_lamp: { name: 'Nectar Lamp', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA7ElEQVR4nJWTIQ7CMBiFv5GFK1SRTEwxgeECGAQoDHfAo/DsClyBzKAIQXGBCSbmEE1mWLjBDAjo0m5rM55q+/q/vvb99a7b8RsLJtOALJU2GgBfbXTBxmepZKAmIgoRUYg+16F4sdwZXC1AsAbgdn8BUOYPu6XfXlNAK1Ii+um1oEwMzhBwoXklBb8eyQQRhcy6Tm3Y1l14z+PCGmMf+K6c/+oDsTq0yPK0AWC+v3wXqgKGI6gKynNs9kFvVEXbQRfBcGQt0h+x24FMuotUoZaIEaMTwdoUaQq0WjeP62F5jrHBB6xRqV/oivIDeoVYNaToHd4AAAAASUVORK5CYII=' },
-  chiseled_sculk: { name: 'Chiseled Sculk', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABZklEQVR4nKWTsUtCURjFf4qiDuIUiApvk7YSeeDiw/+hSRysRaTRBgexXaIHEYgIUW8Q/4CmNnmTIKYONggNgoLhJA4qgjXYe/l8GpQHLly+yzn3nO/ez+IQjj85ADaA26fHf5Gvzi/WAgDXN/cAeEURgMtYxEQo1uoAjBoNowMNq/mM5XQCwN3zC4FsBoBBQd7rwrZdGLc7AISqik4MZDMMCrJ+ZnW6zAJeUWQ5nTBudwhVFVrx5I9oPEmoqjD+rmkx37uvWLcdaOTFsI+QzyHkcyyGfepSjFBVMUUwCASyGZ0cLJWpSGEqUphgqQywU8Tk4K8wCAwKsn5DL50ioTZJqE166RQAEbVm6A3seIVWPElErVGXYjpxH3lvBE3E4Rdw+IW9ZIODUaPBaj7bGWdQkDk6PQHW/2TzJxocWJ0ufFEJX1TC7vbwUXzg7K2L3e3Rly8q/d4DDZuzoO21WdiE5dBx/gKqbIfDOTcLlQAAAABJRU5ErkJggg==' },
-  wisplight: { name: 'Wisplight', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA10lEQVR4nJ1TIRKDMBDcZGI7uM7gsCgegALF7+r4AX+IIgoPChtdBdMHXEUL5ULCZLoql8nu7c1lBY0LAQCMhZ4HNHkJVBkYigReTCsEEdFWwFhOdoj184X+fmN3XCCmqwPpJUSSuYM/oXbrbld3pACkbru4VsaiTiV020G33X4W9BgJVRbvwFhWChoXuiRf/AEAkKEHdSq990y4SDxb8Fm/WKs6EZ0ZP8iCQtynlwxcbYoJ6Hn4FYdMNHkZFFDANyTH7hvZTSXOgVKYVvRBfZzmZmmcVrwBhaNctubwzUMAAAAASUVORK5CYII=' },
-  bloomrift_grass_top: { name: 'Bloomrift Grass Top', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABTUlEQVR4nHWTMYvCQBCFvwQbSZFCi3BwlWkC1ulTXaX4N/wrlvcb5GpROLDyaq8VPMGUJxaxEC5Y5opkxnHVByE72Z03781OvOl4UgFkScpquwZgNBgS9LoAlHlRrzttOF00LvOC2WJOiwZhHJGRAnDeH/WQkJBD0OsqsRT1/j5/KkkK40g3bXzeHwF4eeurksNyA0BLNl1YMrt24a+2a8I4enjIlVzmhfYBYLVd4/2+f1VuZdeOSyoE5/0Rr9oVlXQ0S9KnUl0rUkSbaNmtbJVuEi286XhSjQZDgvS1/nK61J12YbxbMj9L0pr1dKkf4PDxXV9V834EUXJjwdqwMXBV1ShRgmpX3BBI8kMihwTA1xPGt22iVLrx32nrjPgykpa1zIu7hmmTG+goh3GkgUD+SpkL91rhOhOt2WJ+t5kl6fP5b24l6HU5LDf8A3bzxYGL5wa/AAAAAElFTkSuQmCC' },
-  duskstone_bricks: { name: 'Duskstone Bricks', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABgElEQVR4nJWTv0tCURTHP8obRAdLh/wRhLQ4PCpocYugKaTNobmtpaWhrT8gtyARc8k2cTNoCCJocDHEXvBaEsSnb8mQUBokG/Tenr4n0Xe657xz7/l+z/k+19nFw0jTXgAol7LM4vDolGbLpN8zZM7njxKKxLg8P0FZWV7k6loHwOMN8jV4nzo3WyZPNZ1uRwMgEFYBHWrjO+5q3WAWHm9wUjgNp5xithsAdDua7G5FKBIjPlxAn8RxNQGArlXGDPo9Q9KzQhRaY2tOnBWfP0ogrNLtaFK3oJrO1/B9P7O5FgWgWP5tJBlY9QXCKpHVLVl0fLAxxSKVtM/AFVxaH9my/4CyvZOUwf1dmUyuAMDN7aOtuFzKkskVqNYNxPCV18an48uD4YLUaUW1bvDW/EDXJj4QH8RUhS+c9AKY7Qa6VpFbUWb3arYbFJsf8oLTikV9XE3gntdJQJjLyYVTEgRCkZjs4NTd+lOlkur4gd29fRu9vyCkO/ogna/ZTDQPPwGanAv9j4/TAAAAAElFTkSuQmCC' },
-  glow_bloomcap: { name: 'Glow Bloomcap', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAzUlEQVR4nKWTwQ3CMBAEJyjpIg0kiixRCc+UwQsJGoAKKMJtpAJkWUkDdMEDPpxjnwhylP3ZPu/u7dnF/nx8swElwP12xU6e0bmfRa0xAPRNF/ZqKg6XE7tcpb7pqKmoqQB48pod2MknSsCiG4HcKbVKKMggAeYWtEXtaAnlv0PtQPoW+4FgdA5L2oImsgvkiYOYWavH69YYWmMYHn4myAlMLovTgW+IOWFpSNjZDylWjye1imB0Djv5MI1AkNu/ICYJGazJIR53sfU7fwBLWk1g8sfAawAAAABJRU5ErkJggg==' },
-  crystallised_nectar: { name: 'Crystallised Nectar', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABbElEQVR4nKWTv0tCURTHP/4ikfQtNhQqaBAODQYqD5eco/4BwdmlvaaGRltbXBwbW2pqanpIGjo0uGUWDRHC0xDM5DU8fdfbfbV0lns4P77ne+45x2P1qhb/ED+A2bhQHJpemisFMA0nZpIq066fAhDdWrcBGrePAOjF5A+UgvNqOkxnYRpnx467c/eC142WppdE8kIiacbNmlTk4fXLBmj1pyJ5/1xF9AHDrlstlYF5fagmz2TTMgsvQDYRUPs3DbAGMDBsHdB2j6SQ7Q2/+x8AEEnLtFfiMHl2pqMXk2TyMXsKSvVIGvPmRORu7hFcE25NLzljdca4AAnlKjDsij2YV/5NpBZCuQoB30imHYyLkUbtd1Fd2oNJqsy4WZMCCcaXeBdATFtm0OpPnfUE4N1QF+mvFrKJgGNwuwvhNBSTf6G47sEyi6WDAnE/HqtXte4v6wryaubAVsI7MGrz0bkC7I8DyORjPL198g0rUHdQa8JdywAAAABJRU5ErkJggg==' },
-  gloomgem_block: { name: 'Gloomgem Block', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABG0lEQVR4nKVTPWsCQRB9t9gIWuUOYTttrAQL8xdEwV5/gs1iH3sLWxv/gaYPxJ8hWAXE8iDcpbqAlR+Feevc3prGB8cwM7w3HzsX6Mn8gidQAoDm29ibPHxucNxtUW610ej3sAirNmfSDF+z5U1AJpgEgEa/h8OfJaIAUOsYi6FGF4BiUEIKksxYZR3jPNKWo6TyIxGi/h7jd6SLOwCARKySI0ixmodsBUh2iZL8PdSIClnRgUkz79ZJfgQlneNum7OS7O7IK1Buta0df/zkKifOudFXbF+KTPchloOXQrXkcv/IKQG3iyOm+xAr07HPGAX/Lzk3wvz0ipXpWJ9z++ZnUSvgtm3SLNeyC16ofUZZWYpIcCwZD579na+WlHxGDoo8CAAAAABJRU5ErkJggg==' },
-  opaline_mosaic: { name: 'Opaline Mosaic', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAuElEQVR4nGP8fv7pfwYoOHBhK4OKQTSMy3DnwlIGjzA3OH/Hql0MTjZ8cP6+I58YWBgYGBj+Pv/MgAzePf+Nwmf4/QGF+/ftJShLgYGJgULAuH3+rP+EleEx4Pb5r3AD7lxYyuBg4A2XJCZMWBgYMP1MSpgMgjDY9uwu3ADGnXsx/Pzf3ZkBWR5rOrj5+R0DAwMDgwZUAt3P6PKDLB38//oAbgC2tE4oTFgYGBjwpnUGBvxhMvBhAAAhonFSvBECZQAAAABJRU5ErkJggg==' },
-  bloomrift_stone: { name: 'Bloomrift Stone', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABFElEQVR4nJ2TMWrDMBSGPxfdwUaDjRZvHg0Zs+USPUIuUDqUDqEX6AkKhUzZOxQ6tmRLtg4V9SCkU7iDkaImUkL7g+FJ6H//8//eK3YfXyPAfquxxqEHTQ6qVgBUsqTrp/gq9+jS/X47CRXPj68jgDUuq5xCJUsAxCXi2/tLiOezRYg9r1her8Zc6V4lJ6IHjciRU0RvsKpViEWOHBNy96pWCF/msbIeNN/mM5mgkW2oWqQexMadQyXL0zn4C6xxvxP46YKpZY1sw7mRbfhi34Q1LrTr9ub+RCVOEhMrWWKNO5jY9Yr1BlYPd2EvYqhacWz4vz3oehV+t4i3cb15Ag4jG89BvIk+CSTaOJ8tzq507BnAD21TbIsKV+SiAAAAAElFTkSuQmCC' },
-  cracked_sculk_bricks: { name: 'Cracked Sculk Bricks', src: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABvElEQVR4nI2SQUsbURSFv5lMzFAYCTbFWcUhi+iuID4qrgKFin9CFDcl0JUEdy7swoXLQqgrCy78AV0UBSVurDIgKERQcIgh6lREg0FIiSEuJm+aF8V6VpfHufeee97RYgNDrbHxCd4Oj9CNn4tfmczNcWv0AHBXKrG9tgpAelhwsu9iAOzt/Mas/MEWgmxmlHxhF991Abg1eji6vALAPywCYDppzv82AYIBr4UtBAjB6Y9lADQjiqHFTADqZQ8fyEO4XcqWm+2OZoDWQwPdTjoAfNjcCGR2NAM0bq6plz3ui/tKs+mkgxMsy+LK99n7+AkzmcIWQhkS7UtgJlMALOS+hO/zS98A0BPvEsrG/uxMcOtr/AC02MBQ67/sF2CMjU+EUrfXVpnMzXFWuVBIvY5DZjDF7NT0k1wYO+u/iFjx8M6zygWV2BvVzMMiW+1S5sJ3XeplDx2gWasq20A1rBtyeLNWDQZErLhCkGl8v/L9SXNmMBXWESuOLuVLVyWhPzvDwfTnkNz5M7YQ1Mse0I6yTKFEvrCL3/7nbtmFY0/xR++8/zl0Z+KuVArrZq36LweaEaX10Hhx2HN4BAZPqTad3kasAAAAAElFTkSuQmCC' }
-};
-
-const BG_SCALES = [
-  { label: 'Small', px: 32 },
-  { label: 'Medium', px: 64 },
-  { label: 'Large', px: 128 }
-];
-
-const THEMES = {
-  dark: {
-    page: '#111827',
-    board: '#1f2937',
-    border: '#4b5563',
-    grid: '#374151',
-    text: '#ffffff',
-    muted: '#9ca3af',
-    panel: '#1f2937',
-    panelAlt: '#374151',
-    overlay: 'rgba(0,0,0,0.88)',
-    overlayLight: 'rgba(0,0,0,0.75)',
-    life: '#374151',
-    ring: '#ffffff'
-  },
-  light: {
-    page: '#f3f4f6',
-    board: '#ffffff',
-    border: '#9ca3af',
-    grid: '#e5e7eb',
-    text: '#111827',
-    muted: '#6b7280',
-    panel: '#ffffff',
-    panelAlt: '#e5e7eb',
-    overlay: 'rgba(255,255,255,0.92)',
-    overlayLight: 'rgba(255,255,255,0.85)',
-    life: '#d1d5db',
-    ring: '#111827'
-  }
-};
-
-const HC_THEMES = {
-  dark: {
-    page: '#000000',
-    board: '#000000',
-    border: '#ffffff',
-    grid: '#6b6b6b',
-    text: '#ffffff',
-    muted: '#e5e5e5',
-    panel: '#000000',
-    panelAlt: '#262626',
-    overlay: 'rgba(0,0,0,0.95)',
-    overlayLight: 'rgba(0,0,0,0.9)',
-    life: '#404040',
-    ring: '#ffffff'
-  },
-  light: {
-    page: '#ffffff',
-    board: '#ffffff',
-    border: '#000000',
-    grid: '#737373',
-    text: '#000000',
-    muted: '#262626',
-    panel: '#ffffff',
-    panelAlt: '#d4d4d4',
-    overlay: 'rgba(255,255,255,0.97)',
-    overlayLight: 'rgba(255,255,255,0.93)',
-    life: '#a3a3a3',
-    ring: '#000000'
-  }
-};
-
-const hexToRgba = (hex, a) => {
-  const h = hex.replace('#', '');
-  const r = parseInt(h.substring(0, 2), 16);
-  const g = parseInt(h.substring(2, 4), 16);
-  const b = parseInt(h.substring(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${a})`;
-};
-
-// Persistence: uses the artifact storage API when present, falls back to localStorage, then to memory only
-const persist = {
-  async get(key) {
-    try {
-      if (typeof window !== 'undefined' && window.storage) {
-        const r = await window.storage.get(key);
-        if (r && r.value) return r.value;
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      if (!occupied.has(`${x},${y}`)) {
+        cells.push({ x, y });
       }
-    } catch (e) { /* key missing or storage unavailable */ }
-    try {
-      return window.localStorage.getItem(key);
-    } catch (e) {
-      return null;
     }
-  },
-  async set(key, value) {
-    try {
-      if (typeof window !== 'undefined' && window.storage) {
-        await window.storage.set(key, value);
-        return;
-      }
-    } catch (e) { /* fall through */ }
-    try {
-      window.localStorage.setItem(key, value);
-    } catch (e) { /* memory only */ }
-  }
-};
-
-
-// ---------------------------------------------------------------------------
-// Audio: all sound effects and music are synthesized with the Web Audio API
-// ---------------------------------------------------------------------------
-const TRACKS = {
-  // Start screen: bright and bouncy, C - Am - F - G
-  menu: {
-    bpm: 132,
-    mel: [76, 79, 76, 72, 79, 76, 79, 0, 81, 76, 72, 76, 81, 0, 79, 76, 77, 81, 77, 72, 77, 81, 84, 81, 79, 74, 71, 74, 79, 0, 0, 0],
-    bass: [48, 0, 55, 0, 48, 0, 55, 0, 45, 0, 52, 0, 45, 0, 52, 0, 41, 0, 48, 0, 41, 0, 48, 0, 43, 0, 50, 0, 43, 0, 50, 0],
-    melWave: 'square', melVol: 0.09, melHold: 0.85,
-    bassWave: 'triangle', bassVol: 0.2, bassHold: 1.7
-  },
-  // End screen: slow and wistful, Am - F - Dm - E
-  end: {
-    bpm: 76,
-    mel: [76, 0, 72, 0, 69, 0, 72, 0, 77, 0, 72, 0, 69, 0, 65, 0, 74, 0, 69, 0, 65, 0, 69, 0, 68, 0, 71, 0, 76, 0, 0, 0],
-    bass: [45, 0, 0, 0, 0, 0, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0, 38, 0, 0, 0, 0, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0],
-    melWave: 'triangle', melVol: 0.16, melHold: 1.6,
-    bassWave: 'sine', bassVol: 0.22, bassHold: 7.5
-  }
-};
-
-const AudioEngine = (() => {
-  let ctx = null;
-  let master = null;
-  let sfxBus = null;
-  let musicBus = null;
-  let timer = null;
-  let session = null;
-  let musicKey = null;
-  let nextTime = 0;
-  let stepIdx = 0;
-  const cfg = { sfx: true, music: true, volume: 0.7 };
-  const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
-
-  const applyVolume = () => {
-    if (!ctx) return;
-    const t = ctx.currentTime;
-    sfxBus.gain.setTargetAtTime(cfg.sfx ? cfg.volume : 0, t, 0.02);
-    musicBus.gain.setTargetAtTime(cfg.music ? cfg.volume * 0.55 : 0, t, 0.05);
-  };
-
-  // Browsers only allow audio after a user gesture, so this is retried on every gesture
-  const ensure = () => {
-    if (!ctx) {
-      const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-      if (!AC) return null;
-      try {
-        ctx = new AC();
-      } catch (e) {
-        return null;
-      }
-      master = ctx.createGain();
-      master.gain.value = 0.9;
-      master.connect(ctx.destination);
-      sfxBus = ctx.createGain();
-      sfxBus.connect(master);
-      musicBus = ctx.createGain();
-      musicBus.connect(master);
-      applyVolume();
-    }
-    if (ctx.state === 'suspended') {
-      try {
-        const p = ctx.resume();
-        if (p && p.catch) p.catch(() => {});
-      } catch (e) { /* wait for a gesture */ }
-    }
-    return ctx;
-  };
-
-  const tone = (dest, o) => {
-    const { f, f2, t, d, type = 'square', v = 0.2, a = 0.005 } = o;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(f, t);
-    if (f2) osc.frequency.exponentialRampToValueAtTime(f2, t + d);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(v, t + a);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-    osc.connect(g);
-    g.connect(dest);
-    osc.start(t);
-    osc.stop(t + d + 0.05);
-  };
-
-  const sfx = (name) => {
-    if (!cfg.sfx) return;
-    const c = ensure();
-    if (!c) return;
-    const t = c.currentTime + 0.005;
-    const out = sfxBus;
-    switch (name) {
-      case 'click':
-        tone(out, { f: 880, f2: 1320, t, d: 0.06, type: 'square', v: 0.12 });
-        break;
-      case 'eat':
-        tone(out, { f: 523, t, d: 0.09, type: 'square', v: 0.16 });
-        tone(out, { f: 784, t: t + 0.07, d: 0.14, type: 'square', v: 0.16 });
-        tone(out, { f: 1046, t: t + 0.07, d: 0.14, type: 'triangle', v: 0.1 });
-        break;
-      case 'obstacle':
-        tone(out, { f: 140, f2: 50, t, d: 0.35, type: 'sawtooth', v: 0.25 });
-        tone(out, { f: 70, f2: 40, t, d: 0.35, type: 'square', v: 0.2 });
-        break;
-      case 'rival':
-        for (let i = 0; i < 4; i++) {
-          const up = i % 2 === 0;
-          tone(out, { f: up ? 200 + i * 40 : 360, f2: up ? 380 : 220 + i * 20, t: t + i * 0.1, d: 0.14, type: 'sawtooth', v: 0.12 });
-        }
-        break;
-      case 'life':
-        tone(out, { f: 440, f2: 180, t, d: 0.4, type: 'sawtooth', v: 0.22 });
-        tone(out, { f: 415, f2: 170, t: t + 0.02, d: 0.4, type: 'square', v: 0.12 });
-        break;
-      case 'gameover':
-        [392, 349, 311, 262].forEach((f, i) => tone(out, { f, t: t + i * 0.22, d: 0.3, type: 'triangle', v: 0.25 }));
-        tone(out, { f: 131, f2: 98, t: t + 0.9, d: 0.7, type: 'sawtooth', v: 0.15 });
-        break;
-      default:
-        break;
-    }
-  };
-
-  const tick = () => {
-    if (!ctx || !session) return;
-    const tr = TRACKS[musicKey];
-    const sd = 60 / tr.bpm / 2;
-    while (nextTime < ctx.currentTime + 0.3) {
-      const i = stepIdx % tr.mel.length;
-      const m = tr.mel[i];
-      if (m) tone(session, { f: hz(m), t: nextTime, d: sd * tr.melHold, type: tr.melWave, v: tr.melVol, a: 0.01 });
-      const b = tr.bass[i];
-      if (b) tone(session, { f: hz(b), t: nextTime, d: sd * tr.bassHold, type: tr.bassWave, v: tr.bassVol, a: 0.015 });
-      nextTime += sd;
-      stepIdx += 1;
-    }
-  };
-
-  const stopMusic = () => {
-    if (timer) {
-      clearInterval(timer);
-      timer = null;
-    }
-    if (session && ctx) {
-      const sess = session;
-      try {
-        sess.gain.cancelScheduledValues(ctx.currentTime);
-        sess.gain.setTargetAtTime(0, ctx.currentTime, 0.06);
-      } catch (e) { /* ignore */ }
-      setTimeout(() => {
-        try { sess.disconnect(); } catch (e) { /* ignore */ }
-      }, 500);
-    }
-    session = null;
-    musicKey = null;
-  };
-
-  // Loops until stopMusic() or a different track is requested
-  const playMusic = (key, delay = 0) => {
-    if (musicKey === key) return;
-    stopMusic();
-    const c = ensure();
-    if (!c) return;
-    musicKey = key;
-    session = c.createGain();
-    session.gain.value = 1;
-    session.connect(musicBus);
-    stepIdx = 0;
-    nextTime = c.currentTime + 0.08 + delay;
-    timer = setInterval(tick, 90);
-    tick();
-  };
-
-  if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => {
-      if (!ctx) return;
-      try {
-        if (document.hidden) ctx.suspend();
-        else ctx.resume();
-      } catch (e) { /* ignore */ }
-    });
   }
 
-  return {
-    unlock: () => { ensure(); },
-    configure: (o) => { Object.assign(cfg, o); applyVolume(); },
-    sfx,
-    playMusic,
-    stopMusic
-  };
-})();
+  return cells[Math.floor(Math.random() * cells.length)] ?? { x: 0, y: 0 };
+}
 
-const Slider = ({ label, value, onChange, theme }) => (
-  <div className="py-2">
-    <div className="flex justify-between font-semibold mb-1">
-      <span>{label}</span>
-      <span style={{ color: theme.muted }}>{value}%</span>
-    </div>
-    <input
-      type="range"
-      min="0"
-      max="100"
-      step="5"
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      aria-label={label}
-      className="w-full"
-      style={{ accentColor: '#22c55e' }}
-    />
-  </div>
-);
-
-const Toggle = ({ label, desc, checked, onChange, theme }) => (
-  <div className="flex items-center justify-between gap-3 py-2">
-    <div className="min-w-0">
-      <div className="font-semibold">{label}</div>
-      {desc && <div className="text-xs" style={{ color: theme.muted }}>{desc}</div>}
-    </div>
-    <button
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => onChange(!checked)}
-      className="relative rounded-full flex-shrink-0 transition-colors focus:outline-none"
-      style={{ width: 48, height: 26, background: checked ? '#22c55e' : theme.panelAlt, border: `2px solid ${theme.ring}` }}
-    >
-      <span
-        className="absolute rounded-full transition-all"
-        style={{ top: 2, left: checked ? 24 : 2, width: 18, height: 18, background: checked ? '#ffffff' : theme.muted }}
-      />
-    </button>
-  </div>
-);
-
-const Segmented = ({ label, options, value, onChange, theme }) => (
-  <div className="py-2">
-    <div className="font-semibold mb-1">{label}</div>
-    <div className="flex gap-2" role="group" aria-label={label}>
-      {options.map((o) => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          aria-pressed={value === o.value}
-          className="flex-1 py-1 rounded-lg text-sm font-semibold transition-colors"
-          style={{
-            background: value === o.value ? '#3b82f6' : theme.panelAlt,
-            color: value === o.value ? '#ffffff' : theme.text
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  </div>
-);
-
-const Arrow = ({ rotate, size = 26 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" style={{ transform: `rotate(${rotate}deg)` }} aria-hidden="true">
-    <path d="M12 4 L21 19 L3 19 Z" fill="currentColor" />
-  </svg>
-);
-
-const Swatch = ({ selected, onClick, background, label, theme, size = 36 }) => (
-  <button
-    onClick={onClick}
-    title={label}
-    aria-label={label}
-    className="rounded-full transition-transform hover:scale-110 focus:outline-none"
-    style={{
-      width: size,
-      height: size,
-      background,
-      border: '2px solid #000',
-      boxShadow: selected ? `0 0 0 3px ${theme.panel}, 0 0 0 5px ${theme.ring}` : 'none'
-    }}
-  />
-);
-
-const SkinPreview = ({ skinKey, color, dark, radius = 0 }) => {
-  const cs = 22;
-  return (
-    <div className="flex" style={{ gap: radius > 0 ? 2 : 0 }}>
-      {[0, 1, 2, 3].map((i) => (
-        <div
-          key={i}
-          style={{
-            width: cs,
-            height: cs,
-            boxSizing: 'border-box',
-            ...skinStyle(skinKey, i, color, cs, dark, 0),
-            borderRadius: `${radius}%`
-          }}
-        />
-      ))}
-    </div>
-  );
-};
-
-const SnakeGame = ({ onEvent, onStats, externalStats = false, reserveH = 0, renderExtra } = {}) => {
-  const [snake, setSnake] = useState([{ x: 10, y: 10 }]);
-  const [food, setFood] = useState({ x: 15, y: 15 });
-  const [direction, setDirection] = useState({ x: 1, y: 0 });
-  const [gameOver, setGameOver] = useState(false);
+export default function App() {
+  const [snake, setSnake] = useState<Point[]>(INITIAL_SNAKE);
+  const [food, setFood] = useState<Point>(() => getRandomFood(INITIAL_SNAKE));
+  const [direction, setDirection] = useState<Direction>("RIGHT");
+  const [speed, setSpeed] = useState(170);
   const [score, setScore] = useState(0);
-  const [gameStarted, setGameStarted] = useState(false);
-  const [colorSelected, setColorSelected] = useState(false);
-  const [gameSpeed, setGameSpeed] = useState(INITIAL_SPEED);
-  const [cellSize, setCellSize] = useState(25);
-  const [pressedButton, setPressedButton] = useState(null);
-  const [moveCounter, setMoveCounter] = useState(0);
-  const [lives, setLives] = useState(3);
-  const [isPaused, setIsPaused] = useState(false);
-  const [isGamePaused, setIsGamePaused] = useState(false);
-  const [aiSnake, setAiSnake] = useState(null);
-  const [aiDirection, setAiDirection] = useState({ x: 0, y: 1 });
-  const [hunter, setHunter] = useState(null);
-  const [notice, setNotice] = useState(null);
-  const [deathReason, setDeathReason] = useState('');
-
-  // Timed obstacles
-  const [obstacles, setObstacles] = useState([]);
-  const [nextObstacleIn, setNextObstacleIn] = useState(OBSTACLE_INTERVAL);
-
-  // Progress that is saved between sessions
-  const [highScore, setHighScore] = useState(0);
   const [bank, setBank] = useState(0);
-  const [owned, setOwned] = useState(['classic']);
-  const [skin, setSkin] = useState('classic');
-  const [loaded, setLoaded] = useState(false);
-  const [newRecord, setNewRecord] = useState(false);
-  const [earned, setEarned] = useState(0);
-
-  // Settings and store
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [storeOpen, setStoreOpen] = useState(false);
-  const [storeMsg, setStoreMsg] = useState(null);
-  const [themePref, setThemePref] = useState('system');
-  const [systemDark, setSystemDark] = useState(() => {
-    try {
-      return window.matchMedia('(prefers-color-scheme: dark)').matches;
-    } catch (e) {
-      return true;
-    }
-  });
-  const [sfxOn, setSfxOn] = useState(true);
-  const [musicOn, setMusicOn] = useState(true);
-  const [volume, setVolume] = useState(70);
+  const [started, setStarted] = useState(false);
+  const [gameOver, setGameOver] = useState(false);
   const [showPad, setShowPad] = useState(true);
-  const [playerColor, setPlayerColor] = useState('green');
-  const [fruitColor, setFruitColor] = useState('red');
-  const [obstacleColor, setObstacleColor] = useState('white');
-  const [bgKey, setBgKey] = useState('none');
-  const [bgScale, setBgScale] = useState(64);
-  const [highContrast, setHighContrast] = useState(false);
-  const [roundness, setRoundness] = useState('square');
-  const [glowLevel, setGlowLevel] = useState('normal');
-  const [showGrid, setShowGrid] = useState(true);
-  const [showEyes, setShowEyes] = useState(true);
-  const [animations, setAnimations] = useState(() => {
-    try {
-      return !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    } catch (e) {
-      return true;
-    }
-  });
+  const [padPosition, setPadPosition] = useState<PadPosition>("bottom-right");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [redeemInput, setRedeemInput] = useState("");
+  const [redeemMessage, setRedeemMessage] = useState("Use a code to earn points or unlock the Aurora skin.");
+  const [unlockedSkins, setUnlockedSkins] = useState<string[]>(["classic"]);
+  const [selectedSkin, setSelectedSkin] = useState("classic");
 
-  const themeMode = themePref === 'system' ? (systemDark ? 'dark' : 'light') : themePref;
-  const theme = (highContrast ? HC_THEMES : THEMES)[themeMode];
-  const modalOpen = settingsOpen || storeOpen;
-
-  const containerRef = useRef(null);
-  const currentDirectionRef = useRef({ x: 1, y: 0 });
-  const inputQueueRef = useRef([]);
-  const aiMoveCountRef = useRef(0);
-  const aiInitialDirectionRef = useRef({ x: 0, y: 1 });
-  const aiSnakeRef = useRef(null);
-  const aiSpawnedRef = useRef(false);
-  const snakeRef = useRef(snake);
+  const directionRef = useRef<Direction>("RIGHT");
   const foodRef = useRef(food);
-  const hunterRef = useRef(null);
-  const hunterDirRef = useRef({ x: 1, y: 0 });
-  const hunterSpawnedRef = useRef(false);
-  const noticeTimerRef = useRef(null);
-  const obstaclesRef = useRef([]);
-  const obstacleClockRef = useRef(0);
-  const depositedRef = useRef(false);
-  const rootRef = useRef(null);
-  const swipeRef = useRef(null);
-  const onEventRef = useRef(onEvent);
-  const onStatsRef = useRef(onStats);
-  onEventRef.current = onEvent;
-  onStatsRef.current = onStats;
-
-  // Plays the sound for an event and tells the host page about it
-  const fx = useCallback((type) => {
-    AudioEngine.sfx(type);
-    if (onEventRef.current) {
-      try { onEventRef.current(type); } catch (e) { /* host errors must not break the game */ }
-    }
-  }, []);
-
-  // Follow the system light/dark setting while the theme is set to System
-  useEffect(() => {
-    let mq;
-    try {
-      mq = window.matchMedia('(prefers-color-scheme: dark)');
-    } catch (e) {
-      return undefined;
-    }
-    const h = (e) => setSystemDark(e.matches);
-    if (mq.addEventListener) mq.addEventListener('change', h);
-    else mq.addListener(h);
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener('change', h);
-      else mq.removeListener(h);
-    };
-  }, []);
-
-  // Audio settings, unlocking audio on the first gesture, and screen music
-  useEffect(() => {
-    AudioEngine.configure({ sfx: sfxOn, music: musicOn, volume: volume / 100 });
-  }, [sfxOn, musicOn, volume]);
-
-  useEffect(() => {
-    const unlock = () => AudioEngine.unlock();
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
-    window.addEventListener('touchstart', unlock);
-    return () => {
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
-      window.removeEventListener('touchstart', unlock);
-    };
-  }, []);
-
-  // Start screen and end screen music loop until the game starts or a new run begins
-  useEffect(() => {
-    if (gameOver) AudioEngine.playMusic('end', 1.6);
-    else if (!gameStarted) AudioEngine.playMusic('menu', 0);
-    else AudioEngine.stopMusic();
-  }, [gameStarted, gameOver]);
-
-  useEffect(() => () => AudioEngine.stopMusic(), []);
-
-  // Report live stats to the host page
-  const hunterOn = !!hunter;
-  useEffect(() => {
-    if (!onStatsRef.current) return;
-    onStatsRef.current({
-      score,
-      high: Math.max(highScore, score),
-      bank,
-      lives,
-      next: gameStarted && !gameOver ? nextObstacleIn : OBSTACLE_INTERVAL,
-      hunter: hunterOn,
-      running: gameStarted && !gameOver
-    });
-  }, [score, highScore, bank, lives, nextObstacleIn, hunterOn, gameStarted, gameOver]);
-
-  // Load saved progress
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const raw = await persist.get(SAVE_KEY);
-      if (alive && raw) {
-        try {
-          const d = JSON.parse(raw);
-          if (typeof d.high === 'number') setHighScore(d.high);
-          if (typeof d.bank === 'number') setBank(d.bank);
-          if (Array.isArray(d.owned)) {
-            const valid = d.owned.filter(k => SKINS[k]);
-            setOwned(valid.includes('classic') ? valid : ['classic', ...valid]);
-          }
-          if (typeof d.skin === 'string' && SKINS[d.skin]) setSkin(d.skin);
-          if (typeof d.bg === 'string' && (d.bg === 'none' || BACKGROUNDS[d.bg])) setBgKey(d.bg);
-          if (BG_SCALES.some(b => b.px === d.bgScale)) setBgScale(d.bgScale);
-          if (typeof d.hc === 'boolean') setHighContrast(d.hc);
-          if (typeof d.round === 'string' && d.round in ROUNDNESS) setRoundness(d.round);
-          if (typeof d.glow === 'string' && d.glow in GLOW_LEVELS) setGlowLevel(d.glow);
-          if (typeof d.grid === 'boolean') setShowGrid(d.grid);
-          if (typeof d.eyes === 'boolean') setShowEyes(d.eyes);
-          if (typeof d.anim === 'boolean') setAnimations(d.anim);
-          if (['system', 'dark', 'light'].includes(d.theme)) setThemePref(d.theme);
-          if (typeof d.sfx === 'boolean') setSfxOn(d.sfx);
-          if (typeof d.music === 'boolean') setMusicOn(d.music);
-          if (typeof d.vol === 'number' && d.vol >= 0 && d.vol <= 100) setVolume(d.vol);
-          if (typeof d.pad === 'boolean') setShowPad(d.pad);
-        } catch (e) { /* ignore corrupt save */ }
-      }
-      if (alive) setLoaded(true);
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  // Save progress whenever it changes
-  useEffect(() => {
-    if (!loaded) return;
-    persist.set(SAVE_KEY, JSON.stringify({ high: highScore, bank, owned, skin, bg: bgKey, bgScale, hc: highContrast, round: roundness, glow: glowLevel, grid: showGrid, eyes: showEyes, anim: animations, theme: themePref, sfx: sfxOn, music: musicOn, vol: volume, pad: showPad }));
-  }, [loaded, highScore, bank, owned, skin, bgKey, bgScale, highContrast, roundness, glowLevel, showGrid, showEyes, animations, themePref, sfxOn, musicOn, volume, showPad]);
-
-  // When a run ends: bank the score and check for a new high score
-  useEffect(() => {
-    if (!gameOver || depositedRef.current) return;
-    depositedRef.current = true;
-    fx('gameover');
-    setEarned(score);
-    setBank(b => b + score);
-    if (score > highScore) {
-      setHighScore(score);
-      setNewRecord(true);
-    }
-  }, [gameOver, score, highScore, fx]);
-
-  // Calculate optimal cell size based on screen
-  useEffect(() => {
-    const calculateCellSize = () => {
-      const padding = 32;
-      const buttonHeight = 150;
-      const scoreHeight = externalStats ? 56 : 90;
-      const boxW = rootRef.current ? rootRef.current.clientWidth : window.innerWidth;
-      const availableWidth = boxW - padding;
-      const availableHeight = window.innerHeight - buttonHeight - scoreHeight - padding - reserveH;
-      const maxCellWidth = Math.floor(availableWidth / GRID_SIZE);
-      const maxCellHeight = Math.floor(availableHeight / GRID_SIZE);
-      const newCellSize = Math.min(maxCellWidth, maxCellHeight, 40);
-      setCellSize(Math.max(newCellSize, 15));
-    };
-    calculateCellSize();
-    window.addEventListener('resize', calculateCellSize);
-    return () => window.removeEventListener('resize', calculateCellSize);
-  }, [externalStats, reserveH]);
-
-  useEffect(() => () => clearTimeout(noticeTimerRef.current), []);
-
-  const showNotice = useCallback((text, tone = 'warn') => {
-    setNotice({ text, tone });
-    clearTimeout(noticeTimerRef.current);
-    noticeTimerRef.current = setTimeout(() => setNotice(null), 3500);
-  }, []);
-
-  const generateFood = useCallback(() => {
-    const occupied = (x, y) =>
-      snakeRef.current.some(s => s.x === x && s.y === y) ||
-      obstaclesRef.current.some(s => s.x === x && s.y === y) ||
-      (aiSnakeRef.current && aiSnakeRef.current.some(s => s.x === x && s.y === y)) ||
-      (hunterRef.current && hunterRef.current.some(s => s.x === x && s.y === y));
-    let newFood;
-    do {
-      newFood = {
-        x: Math.floor(Math.random() * GRID_SIZE),
-        y: Math.floor(Math.random() * GRID_SIZE)
-      };
-    } while (occupied(newFood.x, newFood.y));
-    return newFood;
-  }, []);
-
-  // Place a new two-cell obstacle away from the snakes and the food
-  const spawnObstacle = useCallback(() => {
-    if (obstaclesRef.current.length >= MAX_OBSTACLE_CELLS) return;
-    const player = snakeRef.current;
-    const head = player[0];
-    const rival = aiSnakeRef.current;
-    const hun = hunterRef.current;
-    const f = foodRef.current;
-    const taken = (x, y) =>
-      x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE ||
-      player.some(s => s.x === x && s.y === y) ||
-      obstaclesRef.current.some(s => s.x === x && s.y === y) ||
-      (rival && rival.some(s => s.x === x && s.y === y)) ||
-      (hun && hun.some(s => s.x === x && s.y === y)) ||
-      (f.x === x && f.y === y) ||
-      Math.abs(x - head.x) + Math.abs(y - head.y) < 4;
-
-    let cells = null;
-    for (let attempt = 0; attempt < 300 && !cells; attempt++) {
-      const x = Math.floor(Math.random() * GRID_SIZE);
-      const y = Math.floor(Math.random() * GRID_SIZE);
-      const horizontal = Math.random() < 0.5;
-      const pair = [{ x, y }, { x: x + (horizontal ? 1 : 0), y: y + (horizontal ? 0 : 1) }];
-      if (!pair.some(c => taken(c.x, c.y))) cells = pair;
-    }
-    if (!cells) return;
-    const next = [...obstaclesRef.current, ...cells];
-    obstaclesRef.current = next;
-    setObstacles(next);
-    showNotice('A new obstacle appeared on the grid!', 'warn');
-    fx('obstacle');
-  }, [showNotice, fx]);
-
-  const resetGame = () => {
-    fx('reset');
-    setSnake([{ x: 10, y: 10 }]);
-    setFood({ x: 15, y: 15 });
-    setDirection({ x: 1, y: 0 });
-    setGameOver(false);
-    setScore(0);
-    setGameStarted(false);
-    setColorSelected(false);
-    setGameSpeed(INITIAL_SPEED);
-    setMoveCounter(0);
-    setLives(3);
-    setIsPaused(false);
-    setIsGamePaused(false);
-    setAiSnake(null);
-    setAiDirection({ x: 0, y: 1 });
-    setHunter(null);
-    setNotice(null);
-    setDeathReason('');
-    setObstacles([]);
-    setNextObstacleIn(OBSTACLE_INTERVAL);
-    setNewRecord(false);
-    setEarned(0);
-    currentDirectionRef.current = { x: 1, y: 0 };
-    inputQueueRef.current = [];
-    aiMoveCountRef.current = 0;
-    aiInitialDirectionRef.current = { x: 0, y: 1 };
-    aiSnakeRef.current = null;
-    aiSpawnedRef.current = false;
-    hunterRef.current = null;
-    hunterDirRef.current = { x: 1, y: 0 };
-    hunterSpawnedRef.current = false;
-    obstaclesRef.current = [];
-    obstacleClockRef.current = 0;
-    depositedRef.current = false;
-  };
-
-  const selectColor = (color) => {
-    setPlayerColor(color);
-    setColorSelected(true);
-  };
-
-  const buySkin = (key) => {
-    const s = SKINS[key];
-    if (owned.includes(key)) return;
-    if (bank < s.price) {
-      setStoreMsg({ text: `You need ${s.price - bank} more points to buy ${s.name}.`, tone: 'warn' });
-      return;
-    }
-    setBank(b => b - s.price);
-    setOwned(o => [...o, key]);
-    setSkin(key);
-    setStoreMsg({ text: `Bought ${s.name} for ${s.price} points and equipped it.`, tone: 'good' });
-  };
-
-  const equipSkin = (key) => {
-    setSkin(key);
-    setStoreMsg({ text: `${SKINS[key].name} equipped.`, tone: 'good' });
-  };
-
-  const resetAppearance = () => {
-    setThemePref('system');
-    setPlayerColor('green');
-    setFruitColor('red');
-    setObstacleColor('white');
-    setBgKey('none');
-    setBgScale(64);
-    setHighContrast(false);
-    setRoundness('square');
-    setGlowLevel('normal');
-    setShowGrid(true);
-    setShowEyes(true);
-    setAnimations(true);
-  };
-
-  const queueDirection = useCallback((newDir) => {
-    if (modalOpen) return;
-    setPressedButton(`${newDir.x},${newDir.y}`);
-    setTimeout(() => setPressedButton(null), 150);
-    setMoveCounter(prev => prev + 1);
-
-    if (isPaused) {
-      setIsPaused(false);
-      inputQueueRef.current = [newDir];
-      return;
-    }
-
-    const lastDir = inputQueueRef.current.length > 0
-      ? inputQueueRef.current[inputQueueRef.current.length - 1]
-      : currentDirectionRef.current;
-
-    const isOpposite = (newDir.x === -lastDir.x && newDir.y === -lastDir.y);
-
-    if (!isOpposite && inputQueueRef.current.length < 3) {
-      inputQueueRef.current.push(newDir);
-    }
-  }, [isPaused, modalOpen]);
-
-  useEffect(() => {
-    const handleKeyPress = (e) => {
-      if (modalOpen) return;
-      if (!gameStarted && !gameOver && colorSelected) {
-        setGameStarted(true);
-      }
-
-      let newDir = null;
-      switch (e.key) {
-        case 'ArrowUp':
-          newDir = { x: 0, y: -1 };
-          e.preventDefault();
-          break;
-        case 'ArrowDown':
-          newDir = { x: 0, y: 1 };
-          e.preventDefault();
-          break;
-        case 'ArrowLeft':
-          newDir = { x: -1, y: 0 };
-          e.preventDefault();
-          break;
-        case 'ArrowRight':
-          newDir = { x: 1, y: 0 };
-          e.preventDefault();
-          break;
-        default:
-          break;
-      }
-
-      if (newDir) {
-        queueDirection(newDir);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [gameStarted, gameOver, colorSelected, queueDirection, modalOpen]);
-
-  // Obstacle clock: counts only while the game is actively running
-  useEffect(() => {
-    if (!gameStarted || gameOver || isGamePaused || isPaused || modalOpen) return;
-    const id = setInterval(() => {
-      obstacleClockRef.current += 1;
-      if (obstacleClockRef.current >= OBSTACLE_INTERVAL) {
-        obstacleClockRef.current = 0;
-        spawnObstacle();
-      }
-      setNextObstacleIn(OBSTACLE_INTERVAL - obstacleClockRef.current);
-    }, 1000);
-    return () => clearInterval(id);
-  }, [gameStarted, gameOver, isGamePaused, isPaused, modalOpen, spawnObstacle]);
-
-  // Player movement
-  useEffect(() => {
-    if (!gameStarted || gameOver) return;
-
-    const moveSnake = () => {
-      if (isPaused || isGamePaused || modalOpen) return;
-
-      setSnake(prevSnake => {
-        let moveDirection = currentDirectionRef.current;
-
-        if (inputQueueRef.current.length > 0) {
-          const nextDir = inputQueueRef.current[0];
-          const isOpposite = (nextDir.x === -moveDirection.x && nextDir.y === -moveDirection.y);
-
-          if (!isOpposite) {
-            moveDirection = nextDir;
-            currentDirectionRef.current = moveDirection;
-            setDirection(moveDirection);
-            setIsPaused(false);
-          }
-
-          inputQueueRef.current.shift();
-        }
-
-        const head = prevSnake[0];
-        const newHead = {
-          x: head.x + moveDirection.x,
-          y: head.y + moveDirection.y
-        };
-
-        const hitWall = newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE;
-        const hitSelf = prevSnake.some(s => s.x === newHead.x && s.y === newHead.y);
-        const hitAI = aiSnakeRef.current && aiSnakeRef.current.some(s => s.x === newHead.x && s.y === newHead.y);
-        const hitObstacle = obstaclesRef.current.some(s => s.x === newHead.x && s.y === newHead.y);
-
-        // Hunter snake: only its tail is vulnerable, anywhere else is fatal
-        let hitHunterBody = false;
-        let killedHunter = false;
-        const hunterCells = hunterRef.current;
-        if (hunterCells && !hitWall) {
-          const idx = hunterCells.findIndex(s => s.x === newHead.x && s.y === newHead.y);
-          if (idx !== -1) {
-            if (idx === hunterCells.length - 1) killedHunter = true;
-            else hitHunterBody = true;
-          }
-        }
-
-        if (hitHunterBody) {
-          setDeathReason('You ran into the hunter snake!');
-          setGameOver(true);
-          return prevSnake;
-        }
-
-        if (hitWall || hitSelf || hitAI || hitObstacle) {
-          if (lives > 1) {
-            setLives(prev => prev - 1);
-            fx('life');
-            setIsPaused(true);
-            return prevSnake;
-          } else {
-            setDeathReason(hitObstacle ? 'You crashed into an obstacle!' : '');
-            setGameOver(true);
-            return prevSnake;
-          }
-        }
-
-        if (killedHunter) {
-          hunterRef.current = null;
-          setHunter(null);
-          setScore(prev => prev + HUNTER_KILL_BONUS);
-          showNotice(`Hunter eliminated! +${HUNTER_KILL_BONUS}`, 'good');
-        }
-
-        const newSnake = [newHead, ...prevSnake];
-
-        if (newHead.x === food.x && newHead.y === food.y) {
-          fx('eat');
-          const nf = generateFood();
-          foodRef.current = nf;
-          setFood(nf);
-          setScore(prev => {
-            const newScore = prev + 10;
-            if (newScore % 50 === 0 && newScore > 0) {
-              setGameSpeed(currentSpeed => currentSpeed * 0.92);
-            }
-            return newScore;
-          });
-          return newSnake;
-        }
-
-        // Spawn AI obstacle snake after 25 moves
-        if (moveCounter >= 25 && !aiSpawnedRef.current) {
-          const playerHead = prevSnake[0];
-          const centerX = Math.floor(GRID_SIZE / 2);
-          const centerY = Math.floor(GRID_SIZE / 2);
-          const playerDir = currentDirectionRef.current;
-          const oppositeDir = { x: -playerDir.x, y: -playerDir.y };
-
-          let bestSpawn = null;
-          let bestDistance = Infinity;
-
-          for (let x = 0; x < GRID_SIZE; x++) {
-            for (let y = 0; y < GRID_SIZE; y++) {
-              const distFromPlayer = Math.abs(x - playerHead.x) + Math.abs(y - playerHead.y);
-              if (distFromPlayer >= 4) {
-                const isOnPlayer = prevSnake.some(seg => seg.x === x && seg.y === y);
-                const isOnHunter = hunterRef.current && hunterRef.current.some(seg => seg.x === x && seg.y === y);
-                const isOnObstacle = obstaclesRef.current.some(seg => seg.x === x && seg.y === y);
-                if (!isOnPlayer && !isOnHunter && !isOnObstacle) {
-                  const distFromCenter = Math.abs(x - centerX) + Math.abs(y - centerY);
-                  if (distFromCenter < bestDistance) {
-                    bestDistance = distFromCenter;
-                    bestSpawn = { x, y };
-                  }
-                }
-              }
-            }
-          }
-
-          if (bestSpawn) {
-            const newAiSnake = [bestSpawn];
-            setAiSnake(newAiSnake);
-            aiSnakeRef.current = newAiSnake;
-            aiInitialDirectionRef.current = oppositeDir;
-            aiMoveCountRef.current = 0;
-            setAiDirection(oppositeDir);
-            aiSpawnedRef.current = true;
-            fx('rival');
-          }
-        }
-
-        newSnake.pop();
-        return newSnake;
-      });
-    };
-
-    const gameLoop = setInterval(moveSnake, gameSpeed);
-    return () => clearInterval(gameLoop);
-  }, [food, gameStarted, gameOver, generateFood, gameSpeed, isPaused, lives, moveCounter, isGamePaused, modalOpen, showNotice]);
-
-  // Keep refs in sync with state
-  useEffect(() => {
-    snakeRef.current = snake;
-  }, [snake]);
 
   useEffect(() => {
     foodRef.current = food;
   }, [food]);
 
-  // Rival (obstacle) AI snake movement
-  useEffect(() => {
-    if (!gameStarted || gameOver || isGamePaused || modalOpen) return;
-    if (!aiSnakeRef.current) return;
+  const resetGame = () => {
+    setSnake(INITIAL_SNAKE);
+    setFood(getRandomFood(INITIAL_SNAKE));
+    setDirection("RIGHT");
+    directionRef.current = "RIGHT";
+    setScore(0);
+    setGameOver(false);
+    setStarted(false);
+    setSpeed(170);
+  };
 
-    const moveAiSnake = () => {
-      const currentAiSnake = aiSnakeRef.current;
-      if (!currentAiSnake || currentAiSnake.length === 0) return;
+  const applySkin = (skin: string) => {
+    if (!unlockedSkins.includes(skin)) return;
+    setSelectedSkin(skin);
+  };
 
-      const aiHead = currentAiSnake[0];
-      let newAiDirection;
+  const handleRedeemCode = () => {
+    const code = redeemInput.trim().toUpperCase();
 
-      const blockedByObstacle = (x, y) => obstaclesRef.current.some(s => s.x === x && s.y === y);
+    if (!code) {
+      setRedeemMessage("Enter a redeem code first.");
+      return;
+    }
 
-      if (aiMoveCountRef.current < 2) {
-        aiMoveCountRef.current += 1;
-        newAiDirection = aiInitialDirectionRef.current;
+    const reward = REDEEM_CODES[code];
+
+    if (!reward) {
+      setRedeemMessage("Invalid code. Try one of the listed rewards.");
+      return;
+    }
+
+    if (reward.type === "points") {
+      const amount = reward.amount ?? 0;
+      setBank((prev) => prev + amount);
+      setRedeemMessage(`Redeemed! +${amount} points added to your bank.`);
+    }
+
+    if (reward.type === "skin") {
+      if (unlockedSkins.includes(reward.skin ?? "classic")) {
+        setRedeemMessage("Aurora skin is already unlocked.");
       } else {
-        const dx = food.x - aiHead.x;
-        const dy = food.y - aiHead.y;
+        setUnlockedSkins((prev) => [...prev, reward.skin ?? "aurora"]);
+        setSelectedSkin(reward.skin ?? "aurora");
+        setRedeemMessage("Secret Aurora skin unlocked! You now have access to it.");
+      }
+    }
 
-        const isSafe = (x, y) => {
-          if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return false;
-          if (currentAiSnake.some(s => s.x === x && s.y === y)) return false;
-          if (snakeRef.current.some(s => s.x === x && s.y === y)) return false;
-          if (blockedByObstacle(x, y)) return false;
-          if (hunterRef.current && hunterRef.current.some(s => s.x === x && s.y === y)) return false;
-          return true;
-        };
+    setRedeemInput("");
+  };
 
-        const directions = [
-          { dir: { x: 1, y: 0 }, priority: dx > 0 ? Math.abs(dx) : 0, isTowardsFood: dx > 0 },
-          { dir: { x: -1, y: 0 }, priority: dx < 0 ? Math.abs(dx) : 0, isTowardsFood: dx < 0 },
-          { dir: { x: 0, y: 1 }, priority: dy > 0 ? Math.abs(dy) : 0, isTowardsFood: dy > 0 },
-          { dir: { x: 0, y: -1 }, priority: dy < 0 ? Math.abs(dy) : 0, isTowardsFood: dy < 0 }
-        ];
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
 
-        const validDirections = directions.filter(d =>
-          !(d.dir.x === -aiDirection.x && d.dir.y === -aiDirection.y)
+      if (key === "w" || key === "arrowup") {
+        if (directionRef.current !== "DOWN") {
+          directionRef.current = "UP";
+          setDirection("UP");
+        }
+      }
+
+      if (key === "s" || key === "arrowdown") {
+        if (directionRef.current !== "UP") {
+          directionRef.current = "DOWN";
+          setDirection("DOWN");
+        }
+      }
+
+      if (key === "a" || key === "arrowleft") {
+        if (directionRef.current !== "RIGHT") {
+          directionRef.current = "LEFT";
+          setDirection("LEFT");
+        }
+      }
+
+      if (key === "d" || key === "arrowright") {
+        if (directionRef.current !== "LEFT") {
+          directionRef.current = "RIGHT";
+          setDirection("RIGHT");
+        }
+      }
+
+      setStarted(true);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!started || gameOver) return;
+
+    const tick = setInterval(() => {
+      setSnake((currentSnake) => {
+        const head = currentSnake[0];
+        const nextHead = { ...head };
+
+        if (directionRef.current === "UP") nextHead.y -= 1;
+        if (directionRef.current === "DOWN") nextHead.y += 1;
+        if (directionRef.current === "LEFT") nextHead.x -= 1;
+        if (directionRef.current === "RIGHT") nextHead.x += 1;
+
+        const hitsWall =
+          nextHead.x < 0 ||
+          nextHead.y < 0 ||
+          nextHead.x >= GRID_SIZE ||
+          nextHead.y >= GRID_SIZE;
+
+        const hitsSelf = currentSnake.some(
+          (segment) => segment.x === nextHead.x && segment.y === nextHead.y
         );
 
-        validDirections.sort((a, b) => {
-          if (a.isTowardsFood !== b.isTowardsFood) return b.isTowardsFood ? 1 : -1;
-          return b.priority - a.priority;
-        });
-
-        let chosenDirection = null;
-        for (const d of validDirections) {
-          if (isSafe(aiHead.x + d.dir.x, aiHead.y + d.dir.y)) {
-            chosenDirection = d.dir;
-            break;
-          }
+        if (hitsWall || hitsSelf) {
+          setGameOver(true);
+          return currentSnake;
         }
 
-        if (!chosenDirection) chosenDirection = aiDirection;
-        newAiDirection = chosenDirection;
-      }
+        const nextSnake = [nextHead, ...currentSnake];
 
-      setAiDirection(newAiDirection);
-
-      const newAiHead = {
-        x: aiHead.x + newAiDirection.x,
-        y: aiHead.y + newAiDirection.y
-      };
-
-      const removeAi = () => {
-        setAiSnake(null);
-        aiSnakeRef.current = null;
-      };
-
-      if (newAiHead.x < 0 || newAiHead.x >= GRID_SIZE || newAiHead.y < 0 || newAiHead.y >= GRID_SIZE) {
-        removeAi();
-        return;
-      }
-      if (currentAiSnake.some(s => s.x === newAiHead.x && s.y === newAiHead.y)) {
-        removeAi();
-        return;
-      }
-      if (snakeRef.current.some(s => s.x === newAiHead.x && s.y === newAiHead.y)) {
-        removeAi();
-        return;
-      }
-      if (blockedByObstacle(newAiHead.x, newAiHead.y)) {
-        removeAi();
-        return;
-      }
-      if (hunterRef.current && hunterRef.current.some(s => s.x === newAiHead.x && s.y === newAiHead.y)) {
-        removeAi();
-        return;
-      }
-
-      const newAiSnake = [newAiHead, ...currentAiSnake];
-
-      if (newAiHead.x === food.x && newAiHead.y === food.y) {
-        setAiSnake(newAiSnake);
-        aiSnakeRef.current = newAiSnake;
-        const nf = generateFood();
-        foodRef.current = nf;
-        setFood(nf);
-        return;
-      }
-
-      newAiSnake.pop();
-      setAiSnake(newAiSnake);
-      aiSnakeRef.current = newAiSnake;
-    };
-
-    const aiSpeed = Math.round(gameSpeed * 0.92);
-    const aiGameLoop = setInterval(moveAiSnake, aiSpeed);
-    return () => clearInterval(aiGameLoop);
-  }, [food, aiDirection, gameStarted, gameOver, generateFood, isGamePaused, modalOpen, gameSpeed]);
-
-  // Sync aiSnake state with ref
-  useEffect(() => {
-    aiSnakeRef.current = aiSnake;
-  }, [aiSnake]);
-
-  // Spawn the hunter snake once the score reaches the threshold
-  useEffect(() => {
-    if (score < HUNTER_SCORE || hunterSpawnedRef.current || !gameStarted || gameOver) return;
-
-    const player = snakeRef.current;
-    const rival = aiSnakeRef.current;
-    const f = foodRef.current;
-    const playerHead = player[0];
-    const inB = (x, y) => x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
-    const blocked = (x, y) =>
-      !inB(x, y) ||
-      player.some(s => s.x === x && s.y === y) ||
-      obstaclesRef.current.some(s => s.x === x && s.y === y) ||
-      (rival && rival.some(s => s.x === x && s.y === y)) ||
-      (f.x === x && f.y === y);
-
-    const findCandidates = (minDist) => {
-      const out = [];
-      for (let x = 0; x < GRID_SIZE; x++) {
-        for (let y = 0; y < GRID_SIZE; y++) {
-          for (const d of DIRS) {
-            const body = [0, 1, 2, 3].map(i => ({ x: x - d.x * i, y: y - d.y * i }));
-            if (body.some(c => blocked(c.x, c.y))) continue;
-            if (blocked(x + d.x, y + d.y)) continue;
-            if (Math.abs(x - playerHead.x) + Math.abs(y - playerHead.y) < minDist) continue;
-            out.push({ body, dir: d });
-          }
+        if (nextHead.x === foodRef.current.x && nextHead.y === foodRef.current.y) {
+          const newFood = getRandomFood(nextSnake);
+          setFood(newFood);
+          setScore((prev) => prev + 10);
+          setSpeed((prev) => Math.max(100, prev - 2));
+          return nextSnake;
         }
-      }
-      return out;
-    };
 
-    let candidates = findCandidates(7);
-    if (candidates.length === 0) candidates = findCandidates(4);
-    if (candidates.length === 0) return;
+        return nextSnake.slice(0, -1);
+      });
+    }, speed);
 
-    const pick = candidates[Math.floor(Math.random() * candidates.length)];
-    hunterRef.current = pick.body;
-    hunterDirRef.current = pick.dir;
-    hunterSpawnedRef.current = true;
-    setHunter(pick.body);
-    showNotice('Warning: a hunter snake appeared! Hit its glowing tail to destroy it.', 'warn');
-    fx('hunter');
-  }, [score, gameStarted, gameOver, showNotice]);
+    return () => clearInterval(tick);
+  }, [started, gameOver, speed]);
 
-  // Hunter snake movement (1.3x the player's speed, chases the food)
-  const hunterActive = !!hunter;
-  useEffect(() => {
-    if (!hunterActive || !gameStarted || gameOver || isGamePaused || modalOpen || isPaused) return;
+  const snakeColor = selectedSkin === "aurora"
+    ? { head: "#a5f3fc", body: "#8b5cf6", glow: "rgba(125, 211, 252, 0.8)" }
+    : { head: "#4ade80", body: "#22c55e", glow: "rgba(74, 222, 128, 0.5)" };
 
-    const moveHunter = () => {
-      const cur = hunterRef.current;
-      if (!cur) return;
+  const cells = [] as Array<{ x: number; y: number; isHead: boolean; isBody: boolean; isFood: boolean }>;
+  for (let y = 0; y < GRID_SIZE; y += 1) {
+    for (let x = 0; x < GRID_SIZE; x += 1) {
+      const isHead = snake[0]?.x === x && snake[0]?.y === y;
+      const isBody = snake.some((segment, index) => index > 0 && segment.x === x && segment.y === y);
+      const isFood = food.x === x && food.y === y;
+      cells.push({ x, y, isHead, isBody, isFood });
+    }
+  }
 
-      const head = cur[0];
-      const dir = hunterDirRef.current;
-      const target = foodRef.current;
-      const player = snakeRef.current;
-      const rival = aiSnakeRef.current;
-      const rocks = obstaclesRef.current;
-      const body = cur.slice(0, -1); // tail will move away, so it's not an obstacle
-
-      const inB = (x, y) => x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
-      const has = (arr, x, y) => !!arr && arr.some(s => s.x === x && s.y === y);
-      const isFree = (x, y) => inB(x, y) && !has(body, x, y) && !has(rocks, x, y) && !has(rival, x, y) && !has(player, x, y);
-
-      // Limited flood fill to avoid steering into dead ends
-      const reach = (sx, sy) => {
-        const seen = new Set([`${sx},${sy}`]);
-        const q = [[sx, sy]];
-        while (q.length && seen.size < 40) {
-          const [cx, cy] = q.shift();
-          for (const d of DIRS) {
-            const nx = cx + d.x;
-            const ny = cy + d.y;
-            const k = `${nx},${ny}`;
-            if (!seen.has(k) && isFree(nx, ny)) {
-              seen.add(k);
-              q.push([nx, ny]);
-            }
-          }
-        }
-        return seen.size;
-      };
-
-      const options = DIRS
-        .filter(d => !(d.x === -dir.x && d.y === -dir.y))
-        .map(d => {
-          const nx = head.x + d.x;
-          const ny = head.y + d.y;
-          return {
-            d,
-            nx,
-            ny,
-            dist: Math.abs(target.x - nx) + Math.abs(target.y - ny),
-            straight: d.x === dir.x && d.y === dir.y ? 0 : 1
-          };
-        });
-
-      const safe = options.filter(o => isFree(o.nx, o.ny));
-      safe.forEach(o => { o.room = reach(o.nx, o.ny); });
-      const roomy = safe.filter(o => o.room >= Math.min(cur.length + 1, 12));
-      const pool = roomy.length ? roomy : safe;
-      pool.sort((a, b) => a.dist - b.dist || a.straight - b.straight);
-
-      let choice = pool[0];
-
-      if (!choice) {
-        // Nothing safe: any move that doesn't wall-crash, self-collide or hit a rock (may hit the player)
-        const fallback = options.filter(o => inB(o.nx, o.ny) && !has(body, o.nx, o.ny) && !has(rocks, o.nx, o.ny));
-        fallback.sort((a, b) => a.dist - b.dist);
-        choice = fallback[0];
-      }
-
-      if (!choice) {
-        // Trapped: the hunter crashes itself out
-        hunterRef.current = null;
-        setHunter(null);
-        showNotice('The hunter crashed itself out!', 'good');
-        return;
-      }
-
-      const newHead = { x: choice.nx, y: choice.ny };
-      hunterDirRef.current = choice.d;
-
-      const ate = newHead.x === target.x && newHead.y === target.y;
-      const grow = ate && cur.length < HUNTER_MAX_LENGTH;
-      const newHunter = grow ? [newHead, ...cur] : [newHead, ...cur.slice(0, -1)];
-      hunterRef.current = newHunter;
-      setHunter(newHunter);
-
-      if (has(rival, newHead.x, newHead.y)) {
-        setAiSnake(null);
-        aiSnakeRef.current = null;
-      }
-
-      if (ate) {
-        const nf = generateFood();
-        foodRef.current = nf;
-        setFood(nf);
-      }
-
-      if (has(player, newHead.x, newHead.y)) {
-        setDeathReason('The hunter snake got you!');
-        setGameOver(true);
-      }
-    };
-
-    const hunterInterval = Math.max(40, Math.round(gameSpeed / HUNTER_SPEED_MULT));
-    const id = setInterval(moveHunter, hunterInterval);
-    return () => clearInterval(id);
-  }, [hunterActive, gameStarted, gameOver, isGamePaused, modalOpen, isPaused, gameSpeed, generateFood, showNotice]);
-
-  const eyes = (size, color = '#dc2626') => !showEyes ? null : (
-    <>
-      <div
-        className="absolute rounded-full"
-        style={{ width: size * 0.2, height: size * 0.2, top: size * 0.25, left: size * 0.3, background: color }}
-      />
-      <div
-        className="absolute rounded-full"
-        style={{ width: size * 0.2, height: size * 0.2, top: size * 0.25, right: size * 0.3, background: color }}
-      />
-    </>
-  );
-
-  const startIfNeeded = () => {
-    if (!gameStarted && !gameOver && colorSelected) setGameStarted(true);
-  };
-
-  const dirBtn = (key, dir, rotate, label) => (
-    <button
-      onClick={() => {
-        startIfNeeded();
-        queueDirection(dir);
-      }}
-      aria-label={label}
-      className={`${pressedButton === key ? 'scale-95' : ''} hover:brightness-110 font-bold w-16 h-16 rounded-lg shadow-lg flex items-center justify-center active:scale-95 transition-all duration-100 select-none`}
-      style={{
-        background: pressedButton === key ? SNAKE_COLORS[playerColor].dark : SNAKE_COLORS[playerColor].base,
-        color: readableText(SNAKE_COLORS[playerColor].base),
-        border: '2px solid #000'
-      }}
-    >
-      <Arrow rotate={rotate} />
-    </button>
-  );
-
-  const sectionTitle = (text) => (
-    <div className="font-semibold mb-2 mt-4 text-sm uppercase tracking-wide" style={{ color: theme.muted }}>
-      {text}
-    </div>
-  );
-
-  // Swipe on the board to steer
-  const onTouchStart = (e) => {
-    const t = e.touches[0];
-    swipeRef.current = { x: t.clientX, y: t.clientY };
-  };
-  const onTouchMove = (e) => {
-    const o = swipeRef.current;
-    if (!o) return;
-    const t = e.touches[0];
-    const dx = t.clientX - o.x;
-    const dy = t.clientY - o.y;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
-    const dir = Math.abs(dx) > Math.abs(dy)
-      ? { x: dx > 0 ? 1 : -1, y: 0 }
-      : { x: 0, y: dy > 0 ? 1 : -1 };
-    startIfNeeded();
-    queueDirection(dir);
-    swipeRef.current = { x: t.clientX, y: t.clientY };
-  };
-  const onTouchEnd = () => {
-    swipeRef.current = null;
-  };
-
-  const bgImg = highContrast ? undefined : BACKGROUNDS[bgKey];
-  const pageStyle = bgImg
-    ? {
-        backgroundColor: theme.page,
-        backgroundImage: `url("${bgImg.src}")`,
-        backgroundSize: `${bgScale}px ${bgScale}px`,
-        imageRendering: 'pixelated'
-      }
-    : { background: theme.page };
-  // Translucent panel behind text so it stays readable over a textured background
-  const hudPanel = bgImg
-    ? {
-        background: hexToRgba(theme.panel, 0.88),
-        borderRadius: 12,
-        padding: '8px 4px',
-        border: `1px solid ${theme.border}`
-      }
-    : {};
-
-  const glowMult = GLOW_LEVELS[glowLevel];
-  const radiusPct = ROUNDNESS[roundness];
-  const dark = themeMode === 'dark';
-  // Outline color for snakes, food and blocks (white on a dark board in high contrast)
-  const edge = highContrast && dark ? '#ffffff' : '#000000';
-
-  const playerStyleFor = (index) => {
-    const st = skinStyle(skin, index, SNAKE_COLORS[playerColor], cellSize, dark, glowMult);
-    if (highContrast && dark && skin !== 'neon') st.border = '2px solid #ffffff';
-    return { ...st, borderRadius: `${radiusPct}%` };
-  };
+  const padStyle = PAD_POSITIONS[padPosition];
 
   return (
     <div
-      ref={rootRef}
-      onClickCapture={(e) => {
-        if (e.target && e.target.closest && e.target.closest('button')) AudioEngine.sfx('click');
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background:
+          "radial-gradient(circle at top, rgba(168, 85, 247, 0.2), rgba(2, 6, 23, 0.95) 30%, rgba(2, 6, 23, 1) 100%)",
+        padding: 24,
+        fontFamily: "Arial, Helvetica, sans-serif",
       }}
-      className="flex flex-col items-center justify-center p-4 transition-colors duration-300"
-      style={{ ...pageStyle, minHeight: `calc(100vh - ${reserveH}px)` }}
     >
-      <div className="w-full max-w-4xl mb-3" style={hudPanel}>
-      <div className="w-full max-w-4xl flex flex-wrap justify-between items-center mb-2 px-4 gap-2">
-        <div className="text-2xl font-bold" style={{ color: theme.text }}>
-          Score: {score}
-        </div>
-        <div className="flex flex-wrap gap-2 justify-center">
-          <button
-            onClick={() => setIsGamePaused(!isGamePaused)}
-            className="bg-yellow-500 hover:bg-yellow-600 text-white font-bold py-2 px-4 rounded-lg transition-colors"
-          >
-            {isGamePaused ? 'Resume' : 'Pause'}
-          </button>
-          <button
-            onClick={() => { setStoreMsg(null); setStoreOpen(true); }}
-            className="font-bold py-2 px-4 rounded-lg transition-colors hover:opacity-80"
-            style={{ background: GRID_RED, color: '#ffffff' }}
-            aria-label="Open skin store"
-          >
-            Store
-          </button>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="font-bold py-2 px-4 rounded-lg transition-colors hover:opacity-80"
-            style={{ background: theme.panelAlt, color: theme.text }}
-            aria-label="Open settings"
-          >
-            Settings
-          </button>
-          {renderExtra && renderExtra(theme)}
-        </div>
-        <div className="text-2xl font-bold" style={{ color: theme.text }}>
-          Moves: {moveCounter}
-        </div>
-      </div>
-
-      {/* Status row: high score, bank, obstacle timer */}
-      <div className="w-full max-w-4xl flex flex-wrap justify-center gap-x-6 gap-y-1 mb-3 px-4 text-sm font-semibold" style={{ color: theme.muted, display: externalStats ? 'none' : undefined }}>
-        <span>High score: <span style={{ color: theme.text }}>{Math.max(highScore, score)}</span></span>
-        <span>Bank: <span style={{ color: theme.text }}>{bank}</span> pts</span>
-        <span>
-          Next obstacle: <span style={{ color: theme.text }}>{gameStarted && !gameOver ? `${nextObstacleIn}s` : `${OBSTACLE_INTERVAL}s`}</span>
-        </span>
-      </div>
-      </div>
-
       <div
-        ref={containerRef}
-        className="relative"
-        onTouchStart={onTouchStart}
-        onTouchMove={onTouchMove}
-        onTouchEnd={onTouchEnd}
-        onTouchCancel={onTouchEnd}
         style={{
-          touchAction: 'none',
-          width: GRID_SIZE * cellSize + 4,
-          height: GRID_SIZE * cellSize + 4,
-          background: theme.board,
-          border: `4px solid ${GRID_RED}`,
-          boxShadow: `0 0 14px rgba(220, 38, 38, 0.55)`
+          background: "rgba(15, 23, 42, 0.82)",
+          border: "3px solid rgba(148, 163, 184, 0.35)",
+          borderRadius: 28,
+          boxShadow: "0 0 0 2px rgba(255,255,255,0.06), 0 18px 60px rgba(0,0,0,0.45)",
+          padding: 18,
+          backdropFilter: "blur(8px)",
+          display: "inline-block",
         }}
       >
-        {/* Grid lines */}
-        <svg className="absolute top-0 left-0 w-full h-full pointer-events-none">
-          {showGrid && Array.from({ length: GRID_SIZE + 1 }).map((_, i) => (
-            <React.Fragment key={i}>
-              <line x1={i * cellSize} y1={0} x2={i * cellSize} y2={GRID_SIZE * cellSize} stroke={theme.grid} strokeWidth="1" />
-              <line x1={0} y1={i * cellSize} x2={GRID_SIZE * cellSize} y2={i * cellSize} stroke={theme.grid} strokeWidth="1" />
-            </React.Fragment>
-          ))}
-          {/* Red outline on the outermost grid lines */}
-          <rect x={0.5} y={0.5} width={GRID_SIZE * cellSize} height={GRID_SIZE * cellSize} fill="none" stroke={GRID_RED} strokeWidth="2" />
-        </svg>
-
-        {/* Timed obstacles */}
-        {obstacles.map((cell, index) => (
-          <div
-            key={`rock-${index}`}
-            className="absolute"
-            style={{
-              left: cell.x * cellSize,
-              top: cell.y * cellSize,
-              width: cellSize,
-              height: cellSize,
-              background: 'linear-gradient(135deg, #9ca3af 0%, #4b5563 50%, #1f2937 100%)',
-              border: `2px solid ${edge}`,
-              boxSizing: 'border-box',
-              boxShadow: `inset 0 0 ${cellSize * 0.25}px rgba(220, 38, 38, 0.7)`,
-              zIndex: 1
-            }}
-          />
-        ))}
-
-        {/* Player Snake */}
-        {snake.map((segment, index) => (
-          <div
-            key={index}
-            className="absolute"
-            style={{
-              left: segment.x * cellSize,
-              top: segment.y * cellSize,
-              width: cellSize,
-              height: cellSize,
-              boxSizing: 'border-box',
-              ...playerStyleFor(index)
-            }}
-          >
-            {index === 0 && eyes(cellSize)}
-          </div>
-        ))}
-
-        {/* Rival Snake */}
-        {aiSnake && aiSnake.map((segment, index) => (
-          <div
-            key={`ai-${index}`}
-            className="absolute"
-            style={{
-              left: segment.x * cellSize,
-              top: segment.y * cellSize,
-              width: cellSize,
-              height: cellSize,
-              background: OBSTACLE_COLORS[obstacleColor].gradient,
-              border: `2px solid ${edge}`,
-              borderRadius: `${radiusPct}%`,
-              boxSizing: 'border-box',
-              boxShadow: glowMult === 0
-                ? 'none'
-                : `0 0 ${cellSize * 0.4 * glowMult}px ${cellSize * 0.2 * glowMult}px ${hexToRgba(OBSTACLE_COLORS[obstacleColor].base, dark ? 0.5 : 0.35)}`
-            }}
-          >
-            {index === 0 && eyes(cellSize)}
-          </div>
-        ))}
-
-        {/* Hunter Snake (hazard stripes, glowing yellow tail = weak spot) */}
-        {hunter && hunter.map((segment, index) => {
-          const isHead = index === 0;
-          const isTail = index === hunter.length - 1;
-          return (
+        <div
+          style={{
+            width: GRID_SIZE * CELL_SIZE + 10,
+            height: GRID_SIZE * CELL_SIZE + 10,
+            background: "#0f172a",
+            border: "4px solid #dc2626",
+            boxShadow: "0 0 14px rgba(220, 38, 38, 0.5)",
+            borderRadius: 10,
+            position: "relative",
+            overflow: "hidden",
+          }}
+        >
+          {cells.map((cell, index) => (
             <div
-              key={`hunter-${index}`}
-              className="absolute"
+              key={`${cell.x}-${cell.y}-${index}`}
               style={{
-                left: segment.x * cellSize,
-                top: segment.y * cellSize,
-                width: cellSize,
-                height: cellSize,
-                background: isTail
-                  ? 'radial-gradient(circle, #fef08a 0%, #facc15 60%, #ca8a04 100%)'
-                  : 'repeating-linear-gradient(45deg, #111827 0px, #111827 4px, #dc2626 4px, #dc2626 8px)',
-                border: `2px solid ${edge}`,
-                borderRadius: `${radiusPct}%`,
-                boxSizing: 'border-box',
-                zIndex: isTail ? 3 : 2,
-                animation: isTail && animations ? 'tailPulse 0.7s ease-in-out infinite' : 'none',
-                boxShadow: isTail
-                  ? (animations ? undefined : `0 0 ${cellSize * 0.4}px ${cellSize * 0.2}px rgba(250, 204, 21, 0.8)`)
-                  : (glowMult === 0 ? 'none' : `0 0 ${cellSize * 0.4 * glowMult}px ${cellSize * 0.15 * glowMult}px rgba(220, 38, 38, 0.6)`)
+                position: "absolute",
+                left: cell.x * CELL_SIZE,
+                top: cell.y * CELL_SIZE,
+                width: CELL_SIZE,
+                height: CELL_SIZE,
+                background: (cell.x + cell.y) % 2 === 0 ? "rgba(15, 23, 42, 0.9)" : "rgba(15, 23, 42, 0.75)",
+                border: "1px solid rgba(148, 163, 184, 0.05)",
+                boxSizing: "border-box",
               }}
             >
-              {isHead && eyes(cellSize, '#facc15')}
-              {isTail && (
+              {cell.isFood && (
                 <div
-                  className="absolute inset-0 flex items-center justify-center font-bold"
-                  style={{ fontSize: cellSize * 0.5, color: '#7c2d12', lineHeight: 1 }}
+                  style={{
+                    position: "absolute",
+                    inset: 5,
+                    borderRadius: "50%",
+                    background: "#f97316",
+                    boxShadow: "0 0 10px rgba(249, 115, 22, 0.8)",
+                  }}
+                />
+              )}
+
+              {cell.isBody && (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 2,
+                    borderRadius: 6,
+                    background: snakeColor.body,
+                    boxShadow: `0 0 10px ${snakeColor.glow}`,
+                  }}
+                />
+              )}
+
+              {cell.isHead && (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 2,
+                    borderRadius: 6,
+                    background: snakeColor.head,
+                    boxShadow: `0 0 12px ${snakeColor.glow}`,
+                  }}
                 >
-                  X
+                  <div
+                    style={{
+                      position: "absolute",
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      background: "#111827",
+                      left: 6,
+                      top: 6,
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: "absolute",
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      background: "#111827",
+                      right: 6,
+                      top: 6,
+                    }}
+                  />
                 </div>
               )}
             </div>
-          );
-        })}
+          ))}
 
-        {/* Food */}
-        <div
-          className="absolute rounded-full"
-          style={{
-            left: food.x * cellSize + cellSize / 4,
-            top: food.y * cellSize + cellSize / 4,
-            width: cellSize / 2,
-            height: cellSize / 2,
-            background: FRUIT_COLORS[fruitColor].color,
-            border: highContrast ? `2px solid ${edge}` : '1px solid rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            animation: animations ? 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite' : 'none'
-          }}
-        >
-          <div className="bg-white rounded-full" style={{ width: cellSize * 0.12, height: cellSize * 0.12 }} />
-        </div>
-
-        <style>{`
-          @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.85; transform: scale(1.05); }
-          }
-          @keyframes tailPulse {
-            0%, 100% { box-shadow: 0 0 ${cellSize * 0.2}px ${cellSize * 0.1}px rgba(250, 204, 21, 0.9); }
-            50% { box-shadow: 0 0 ${cellSize * 0.6}px ${cellSize * 0.3}px rgba(250, 204, 21, 0.3); }
-          }
-        `}</style>
-
-        {/* Notice banner */}
-        {notice && (
-          <div
-            className="absolute left-1/2 text-center font-semibold rounded-lg shadow-lg pointer-events-none"
-            style={{
-              top: 6,
-              transform: 'translateX(-50%)',
-              zIndex: 10,
-              width: '90%',
-              padding: '6px 10px',
-              fontSize: Math.max(11, Math.min(cellSize * 0.55, 15)),
-              background: notice.tone === 'good' ? '#16a34a' : '#dc2626',
-              color: '#ffffff',
-              border: '2px solid #000'
-            }}
-          >
-            {notice.text}
-          </div>
-        )}
-
-        {/* Color Selection Overlay */}
-        {!colorSelected && !gameOver && (
-          <div
-            className="absolute inset-0 flex items-center justify-center overflow-hidden"
-            style={{ background: theme.overlay, zIndex: 20 }}
-          >
-            <div className="text-center px-2 py-2 max-w-full max-h-full overflow-auto">
-              <div className="font-bold mb-3" style={{ fontSize: Math.min(cellSize * 1.2, 24), color: theme.text }}>
-                Choose Your Snake Color
-              </div>
-              <div className="grid grid-cols-3 gap-2" style={{ maxWidth: GRID_SIZE * cellSize * 0.95 }}>
-                {Object.entries(SNAKE_COLORS).map(([colorKey, colorData]) => (
-                  <button
-                    key={colorKey}
-                    onClick={() => selectColor(colorKey)}
-                    className="rounded transition-all duration-200 hover:scale-105"
-                    style={{
-                      padding: Math.max(cellSize * 0.2, 6),
-                      background: theme.panelAlt
-                    }}
-                  >
-                    <div style={{ fontSize: Math.min(cellSize * 0.6, 14), color: theme.text }} className="mb-1">
-                      {colorData.name}
-                    </div>
-                    <div className="flex gap-1 justify-center">
-                      {[0, 1, 2].map((i) => (
-                        <div
-                          key={i}
-                          style={{
-                            width: Math.max(cellSize * 0.5, 10),
-                            height: Math.max(cellSize * 0.5, 10),
-                            background: colorData.gradient,
-                            border: '2px solid #000',
-                            borderRadius: '2px'
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </button>
-                ))}
-              </div>
+          {!started && !gameOver && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(15, 23, 42, 0.72)",
+                color: "#f8fafc",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 700,
+                letterSpacing: 1,
+              }}
+            >
+              PRESS ANY ARROW KEY
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Game Over Overlay */}
-        {gameOver && (
-          <div className="absolute inset-0 flex items-center justify-center" style={{ background: theme.overlayLight, zIndex: 20 }}>
-            <div className="text-center px-4">
-              <div className="text-4xl font-bold mb-2" style={{ color: theme.text }}>Game Over!</div>
-              {deathReason && (
-                <div className="text-lg mb-2 font-semibold" style={{ color: '#ef4444' }}>{deathReason}</div>
-              )}
-              <div className="text-2xl mb-2" style={{ color: theme.text }}>Final Score: {score}</div>
-              {newRecord ? (
-                <div className="text-lg mb-1 font-bold" style={{ color: '#f59e0b' }}>New high score!</div>
-              ) : (
-                <div className="text-base mb-1" style={{ color: theme.muted }}>High score: {highScore}</div>
-              )}
-              <div className="text-sm mb-6" style={{ color: theme.muted }}>
-                +{earned} points added to your bank (total {bank})
-              </div>
-              <div className="flex gap-2 justify-center">
-                <button
-                  onClick={resetGame}
-                  className="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg"
-                >
-                  Play Again
-                </button>
-                <button
-                  onClick={() => { setStoreMsg(null); setStoreOpen(true); }}
-                  className="font-bold py-3 px-6 rounded-lg hover:opacity-90"
-                  style={{ background: GRID_RED, color: '#ffffff' }}
-                >
-                  Visit Store
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Start Message */}
-        {!gameStarted && !gameOver && colorSelected && (
-          <div className="absolute inset-0 flex items-center justify-center" style={{ background: theme.overlayLight, zIndex: 20 }}>
-            <div className="text-center px-4">
-              <div className="text-3xl font-bold mb-4" style={{ color: theme.text }}>Snake Game</div>
-              <div className="text-lg mb-2" style={{ color: theme.text }}>Use Arrow Keys or Buttons</div>
-              <div className="text-sm" style={{ color: theme.muted }}>Press any arrow key or button to start</div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Lives Display */}
-      <div className="mt-2 flex gap-2 justify-center">
-        {[...Array(3)].map((_, i) => (
-          <div
-            key={i}
-            className="rounded-full"
-            style={{
-              width: cellSize * 0.8,
-              height: cellSize * 0.8,
-              background: i < lives ? FRUIT_COLORS[fruitColor].color : theme.life,
-              border: '2px solid #000'
-            }}
-          />
-        ))}
-      </div>
-
-      <div className="mt-2 text-sm text-center" style={{ color: theme.muted, ...(bgImg ? { ...hudPanel, padding: '8px 16px' } : {}) }}>
-        <p>Use arrow keys or on-screen buttons to control the snake</p>
-        <p>Don't hit the walls, yourself, the rival snake, or the grey obstacle blocks!</p>
-        <p>A new obstacle block appears every {OBSTACLE_INTERVAL} seconds of play.</p>
-        <p>At {HUNTER_SCORE} points a hunter snake appears. Hit its glowing tail to destroy it, but touch any other part and it's game over!</p>
-      </div>
-
-      {/* Directional Button Overlay */}
-      {colorSelected && showPad && (
-        <div className="fixed bottom-8 right-8 flex flex-col items-center gap-1">
-          {dirBtn('0,-1', { x: 0, y: -1 }, 0, 'Up')}
-          <div className="flex gap-1">
-            {dirBtn('-1,0', { x: -1, y: 0 }, 270, 'Left')}
-            {dirBtn('0,1', { x: 0, y: 1 }, 180, 'Down')}
-            {dirBtn('1,0', { x: 1, y: 0 }, 90, 'Right')}
-          </div>
-        </div>
-      )}
-
-      {/* Store Modal */}
-      {storeOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.6)' }}
-          onClick={() => setStoreOpen(false)}
-        >
-          <div
-            className="w-full max-w-md rounded-xl shadow-2xl p-5 overflow-y-auto"
-            style={{
-              background: theme.panel,
-              color: theme.text,
-              maxHeight: '90vh',
-              border: `2px solid ${GRID_RED}`
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex justify-between items-center">
-              <div className="text-2xl font-bold">Skin Store</div>
+          {gameOver && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                background: "rgba(15, 23, 42, 0.8)",
+                color: "#f8fafc",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexDirection: "column",
+                fontWeight: 700,
+              }}
+            >
+              <div style={{ fontSize: 28, marginBottom: 8 }}>Game Over</div>
+              <div style={{ fontSize: 16 }}>Score: {score}</div>
               <button
-                onClick={() => setStoreOpen(false)}
-                className="text-sm font-semibold px-3 py-1 rounded-lg hover:opacity-80"
-                aria-label="Close store"
-                style={{ background: theme.panelAlt, color: theme.text }}
+                onClick={resetGame}
+                style={{
+                  marginTop: 14,
+                  background: "linear-gradient(135deg, #7c3aed, #22d3ee)",
+                  border: "none",
+                  color: "#fff",
+                  fontWeight: 700,
+                  borderRadius: 10,
+                  padding: "10px 16px",
+                  cursor: "pointer",
+                }}
               >
-                Close
+                Retry
               </button>
             </div>
+          )}
+        </div>
+      </div>
 
-            <div className="mt-3 flex justify-between items-center rounded-lg px-3 py-2" style={{ background: theme.panelAlt }}>
-              <span className="font-semibold">Points bank</span>
-              <span className="text-xl font-bold">{bank}</span>
-            </div>
-            <div className="text-xs mt-2" style={{ color: theme.muted }}>
-              Your score is added to the bank when a run ends. Buying a skin spends points from the bank, so it lowers your balance.
-            </div>
+      <div
+        style={{
+          position: "fixed",
+          top: 18,
+          left: 18,
+          right: 18,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          zIndex: 5,
+          color: "#e2e8f0",
+          fontWeight: 700,
+          pointerEvents: "none",
+        }}
+      >
+        <div style={{ pointerEvents: "auto", background: "rgba(15, 23, 42, 0.7)", padding: "8px 12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)" }}>
+          Score: {score}
+        </div>
+        <div style={{ pointerEvents: "auto", background: "rgba(15, 23, 42, 0.7)", padding: "8px 12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)" }}>
+          Bank: {bank}
+        </div>
+        <button
+          onClick={() => setSettingsOpen(true)}
+          style={{
+            pointerEvents: "auto",
+            border: "none",
+            borderRadius: 12,
+            padding: "8px 12px",
+            fontWeight: 700,
+            background: "rgba(148, 163, 184, 0.2)",
+            color: "#fff",
+            cursor: "pointer",
+          }}
+        >
+          Settings
+        </button>
+      </div>
 
-            {storeMsg && (
-              <div
-                className="mt-3 text-sm font-semibold rounded-lg px-3 py-2"
-                style={{ background: storeMsg.tone === 'good' ? '#16a34a' : '#dc2626', color: '#ffffff' }}
-              >
-                {storeMsg.text}
-              </div>
-            )}
+      {showPad && (
+        <div
+          style={{
+            position: "fixed",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+            zIndex: 30,
+            ...padStyle,
+          }}
+        >
+          <button
+            onClick={() => {
+              setStarted(true);
+              if (directionRef.current !== "DOWN") {
+                directionRef.current = "UP";
+                setDirection("UP");
+              }
+            }}
+            aria-label="Move up"
+            style={{
+              width: 56,
+              height: 56,
+              border: "2px solid rgba(0,0,0,0.3)",
+              borderRadius: 12,
+              fontSize: 24,
+              background: "linear-gradient(135deg, #4ade80, #22c55e)",
+              color: "#111827",
+              fontWeight: 900,
+              cursor: "pointer",
+            }}
+          >
+            ↑
+          </button>
 
-            <div className="mt-4 flex flex-col gap-3">
-              {Object.entries(SKINS).map(([key, s]) => {
-                const isOwned = owned.includes(key);
-                const isEquipped = skin === key;
-                const canAfford = bank >= s.price;
-                return (
-                  <div
-                    key={key}
-                    className="rounded-lg p-3"
-                    style={{
-                      background: theme.panelAlt,
-                      border: isEquipped ? `2px solid ${GRID_RED}` : '2px solid transparent'
-                    }}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="font-bold">{s.name}</div>
-                        <div className="text-xs" style={{ color: theme.muted }}>{s.desc}</div>
-                      </div>
-                      <SkinPreview skinKey={key} color={SNAKE_COLORS[playerColor]} dark={themeMode === 'dark'} radius={radiusPct} />
-                    </div>
-                    <div className="mt-2 flex justify-end">
-                      {isEquipped ? (
-                        <span className="text-sm font-bold px-3 py-1" style={{ color: GRID_RED }}>Equipped</span>
-                      ) : isOwned ? (
-                        <button
-                          onClick={() => equipSkin(key)}
-                          className="text-sm font-bold px-4 py-1 rounded-lg bg-blue-500 hover:bg-blue-600 text-white"
-                        >
-                          Equip
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => buySkin(key)}
-                          className="text-sm font-bold px-4 py-1 rounded-lg text-white hover:opacity-90"
-                          style={{ background: canAfford ? '#16a34a' : '#6b7280' }}
-                        >
-                          Buy for {s.price} pts
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
+          <div style={{ display: "flex", gap: 8 }}>
             <button
-              onClick={() => setStoreOpen(false)}
-              className="mt-5 w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-lg"
+              onClick={() => {
+                setStarted(true);
+                if (directionRef.current !== "RIGHT") {
+                  directionRef.current = "LEFT";
+                  setDirection("LEFT");
+                }
+              }}
+              aria-label="Move left"
+              style={{
+                width: 56,
+                height: 56,
+                border: "2px solid rgba(0,0,0,0.3)",
+                borderRadius: 12,
+                fontSize: 24,
+                background: "linear-gradient(135deg, #60a5fa, #3b82f6)",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
             >
-              Done
+              ←
             </button>
-            <div className="text-xs text-center mt-2" style={{ color: theme.muted }}>
-              The game is paused while the store is open.
-            </div>
+            <button
+              onClick={() => {
+                setStarted(true);
+                if (directionRef.current !== "UP") {
+                  directionRef.current = "DOWN";
+                  setDirection("DOWN");
+                }
+              }}
+              aria-label="Move down"
+              style={{
+                width: 56,
+                height: 56,
+                border: "2px solid rgba(0,0,0,0.3)",
+                borderRadius: 12,
+                fontSize: 24,
+                background: "linear-gradient(135deg, #fbbf24, #f59e0b)",
+                color: "#111827",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              ↓
+            </button>
+            <button
+              onClick={() => {
+                setStarted(true);
+                if (directionRef.current !== "LEFT") {
+                  directionRef.current = "RIGHT";
+                  setDirection("RIGHT");
+                }
+              }}
+              aria-label="Move right"
+              style={{
+                width: 56,
+                height: 56,
+                border: "2px solid rgba(0,0,0,0.3)",
+                borderRadius: 12,
+                fontSize: 24,
+                background: "linear-gradient(135deg, #f472b6, #ec4899)",
+                color: "#fff",
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              →
+            </button>
           </div>
         </div>
       )}
 
-      {/* Settings Modal */}
       {settingsOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.6)' }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(2, 6, 23, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 40,
+            padding: 20,
+          }}
           onClick={() => setSettingsOpen(false)}
         >
           <div
-            className="w-full max-w-md rounded-xl shadow-2xl p-5 overflow-y-auto"
             style={{
-              background: theme.panel,
-              color: theme.text,
-              maxHeight: '90vh',
-              border: `1px solid ${theme.border}`
+              width: "100%",
+              maxWidth: 460,
+              background: "rgba(15, 23, 42, 0.96)",
+              border: "1px solid rgba(148, 163, 184, 0.25)",
+              borderRadius: 20,
+              padding: 20,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.45)",
+              color: "#f8fafc",
             }}
-            onClick={(e) => e.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
           >
-            <div className="flex justify-between items-center">
-              <div className="text-2xl font-bold">Settings</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <h3 style={{ margin: 0, fontSize: 28 }}>Settings</h3>
               <button
                 onClick={() => setSettingsOpen(false)}
-                className="text-sm font-semibold px-3 py-1 rounded-lg hover:opacity-80"
-                aria-label="Close settings"
-                style={{ background: theme.panelAlt, color: theme.text }}
+                style={{
+                  border: "none",
+                  background: "rgba(148, 163, 184, 0.15)",
+                  color: "#fff",
+                  borderRadius: 10,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                }}
               >
                 Close
               </button>
             </div>
 
-            {sectionTitle('Appearance')}
-            <div className="flex gap-2">
-              {['system', 'dark', 'light'].map((mode) => (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ marginBottom: 10, fontWeight: 700 }}>Controls</div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <span>Show on-screen pad</span>
                 <button
-                  key={mode}
-                  onClick={() => setThemePref(mode)}
-                  className="flex-1 py-2 rounded-lg font-semibold transition-colors"
+                  onClick={() => setShowPad((prev) => !prev)}
                   style={{
-                    background: themePref === mode ? '#3b82f6' : theme.panelAlt,
-                    color: themePref === mode ? '#ffffff' : theme.text
+                    width: 52,
+                    height: 28,
+                    borderRadius: 999,
+                    border: "none",
+                    background: showPad ? "#22c55e" : "#475569",
+                    cursor: "pointer",
+                    position: "relative",
                   }}
                 >
-                  {mode === 'system' ? 'System' : mode === 'dark' ? 'Dark' : 'Light'}
-                </button>
-              ))}
-            </div>
-
-            {sectionTitle('Display')}
-            <Toggle
-              theme={theme}
-              label="High contrast"
-              desc="Pure black or white board, brighter grid, white outlines. Hides the custom background."
-              checked={highContrast}
-              onChange={setHighContrast}
-            />
-            <Segmented
-              theme={theme}
-              label="Snake square shape"
-              options={[
-                { value: 'square', label: 'Square' },
-                { value: 'soft', label: 'Soft' },
-                { value: 'round', label: 'Round' },
-                { value: 'circle', label: 'Circle' }
-              ]}
-              value={roundness}
-              onChange={setRoundness}
-            />
-            <Segmented
-              theme={theme}
-              label="Snake glow"
-              options={[
-                { value: 'off', label: 'Off' },
-                { value: 'low', label: 'Low' },
-                { value: 'normal', label: 'Normal' },
-                { value: 'high', label: 'High' }
-              ]}
-              value={glowLevel}
-              onChange={setGlowLevel}
-            />
-            <Toggle theme={theme} label="Grid lines" desc="Turn off the inner lines; the red border stays." checked={showGrid} onChange={setShowGrid} />
-            <Toggle theme={theme} label="Animations" desc="Pulsing food and the hunter's tail marker." checked={animations} onChange={setAnimations} />
-            <Toggle theme={theme} label="Snake eyes" checked={showEyes} onChange={setShowEyes} />
-
-            {sectionTitle('Sound')}
-            <Toggle theme={theme} label="Sound effects" desc="Eating, button presses, obstacles, the rival snake, lost lives and the end screen." checked={sfxOn} onChange={setSfxOn} />
-            <Toggle theme={theme} label="Music" desc="Loops on the start and end screens until you act." checked={musicOn} onChange={setMusicOn} />
-            <Slider theme={theme} label="Volume" value={volume} onChange={setVolume} />
-
-            {sectionTitle('Controls')}
-            <Toggle theme={theme} label="On-screen arrow pad" desc="Hide it if you steer with the keyboard or by swiping on the board." checked={showPad} onChange={setShowPad} />
-
-            {sectionTitle('Custom background')}
-            {highContrast && (
-              <div className="text-xs mb-2" style={{ color: theme.muted }}>
-                Hidden while high contrast is on.
-              </div>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setBgKey('none')}
-                title="No custom background"
-                aria-label="No custom background"
-                className="text-xs font-bold transition-transform hover:scale-110 focus:outline-none"
-                style={{
-                  width: 44,
-                  height: 44,
-                  background: theme.panelAlt,
-                  color: theme.text,
-                  border: '2px solid #000',
-                  boxShadow: bgKey === 'none' ? `0 0 0 3px ${theme.panel}, 0 0 0 5px ${theme.ring}` : 'none'
-                }}
-              >
-                None
-              </button>
-              {Object.entries(BACKGROUNDS).map(([key, b]) => (
-                <button
-                  key={key}
-                  onClick={() => setBgKey(key)}
-                  title={b.name}
-                  aria-label={b.name}
-                  className="transition-transform hover:scale-110 focus:outline-none"
-                  style={{
-                    width: 44,
-                    height: 44,
-                    backgroundImage: `url("${b.src}")`,
-                    backgroundSize: '100% 100%',
-                    imageRendering: 'pixelated',
-                    border: '2px solid #000',
-                    boxShadow: bgKey === key ? `0 0 0 3px ${theme.panel}, 0 0 0 5px ${theme.ring}` : 'none'
-                  }}
-                />
-              ))}
-            </div>
-            <div className="text-xs mt-2" style={{ color: theme.muted }}>
-              {bgImg ? `Selected: ${bgImg.name}` : 'Selected: none (plain color)'}
-            </div>
-            {bgImg && (
-              <div className="flex gap-2 mt-3">
-                {BG_SCALES.map((sc) => (
-                  <button
-                    key={sc.px}
-                    onClick={() => setBgScale(sc.px)}
-                    className="flex-1 py-1 rounded-lg text-sm font-semibold transition-colors"
+                  <span
                     style={{
-                      background: bgScale === sc.px ? '#3b82f6' : theme.panelAlt,
-                      color: bgScale === sc.px ? '#ffffff' : theme.text
+                      position: "absolute",
+                      left: showPad ? 26 : 4,
+                      top: 4,
+                      width: 20,
+                      height: 20,
+                      borderRadius: "50%",
+                      background: "#fff",
+                      transition: "left 0.2s ease",
+                    }}
+                  />
+                </button>
+              </div>
+
+              <div style={{ marginBottom: 10, fontWeight: 700 }}>Pad position</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }}>
+                {(["top-left", "top-right", "bottom-left", "bottom-right"] as PadPosition[]).map((position) => (
+                  <button
+                    key={position}
+                    onClick={() => setPadPosition(position)}
+                    style={{
+                      padding: "8px 10px",
+                      borderRadius: 10,
+                      border: position === padPosition ? "2px solid #38bdf8" : "1px solid rgba(255,255,255,0.18)",
+                      background: position === padPosition ? "rgba(56, 189, 248, 0.2)" : "rgba(148, 163, 184, 0.12)",
+                      color: "#f8fafc",
+                      fontWeight: 700,
+                      cursor: "pointer",
                     }}
                   >
-                    {sc.label} tiles
+                    {position.replace("-", " ")}
                   </button>
                 ))}
               </div>
-            )}
-
-            {sectionTitle('Snake color')}
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(SNAKE_COLORS).map(([key, c]) => (
-                <Swatch
-                  key={key}
-                  label={c.name}
-                  background={c.gradient}
-                  selected={playerColor === key}
-                  onClick={() => setPlayerColor(key)}
-                  theme={theme}
-                />
-              ))}
             </div>
 
-            {sectionTitle('Fruit color')}
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(FRUIT_COLORS).map(([key, c]) => (
-                <Swatch
-                  key={key}
-                  label={c.name}
-                  background={c.color}
-                  selected={fruitColor === key}
-                  onClick={() => setFruitColor(key)}
-                  theme={theme}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ marginBottom: 10, fontWeight: 700 }}>Redeem code</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  value={redeemInput}
+                  onChange={(event) => setRedeemInput(event.target.value)}
+                  placeholder="Enter code"
+                  style={{
+                    flex: 1,
+                    background: "rgba(15, 23, 42, 0.8)",
+                    border: "1px solid rgba(255,255,255,0.14)",
+                    borderRadius: 10,
+                    padding: "10px 12px",
+                    color: "#f8fafc",
+                    outline: "none",
+                  }}
                 />
-              ))}
+                <button
+                  onClick={handleRedeemCode}
+                  style={{
+                    border: "none",
+                    borderRadius: 10,
+                    padding: "10px 16px",
+                    background: "linear-gradient(135deg, #7c3aed, #22d3ee)",
+                    color: "#fff",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Redeem
+                </button>
+              </div>
+
+              <div style={{ marginTop: 12, color: "#cbd5e1", minHeight: 22 }}>{redeemMessage}</div>
+
+              <div style={{ marginTop: 14, color: "#cbd5e1", lineHeight: 1.8 }}>
+                <div>Codes:</div>
+                <div><strong>300POINTS</strong> = +300 points</div>
+                <div><strong>620POINTS</strong> = +620 points</div>
+                <div><strong>AURORA-SECRET</strong> = unlock the secret Aurora skin</div>
+              </div>
             </div>
 
-            {sectionTitle('Rival snake color')}
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(OBSTACLE_COLORS).map(([key, c]) => (
-                <Swatch
-                  key={key}
-                  label={c.name}
-                  background={c.gradient}
-                  selected={obstacleColor === key}
-                  onClick={() => setObstacleColor(key)}
-                  theme={theme}
-                />
-              ))}
-            </div>
-
-            <button
-              onClick={resetAppearance}
-              className="mt-6 w-full font-semibold py-2 rounded-lg hover:opacity-80"
-              style={{ background: theme.panelAlt, color: theme.text }}
-            >
-              Reset appearance to defaults
-            </button>
-            <button
-              onClick={() => setSettingsOpen(false)}
-              className="mt-3 w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded-lg"
-            >
-              Done
-            </button>
-            <div className="text-xs text-center mt-2" style={{ color: theme.muted }}>
-              The game is paused while settings are open.
+            <div>
+              <div style={{ marginBottom: 10, fontWeight: 700 }}>Skins</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                {[
+                  { id: "classic", label: "Classic" },
+                  { id: "aurora", label: "Aurora" },
+                ].map((skin) => {
+                  const unlocked = unlockedSkins.includes(skin.id);
+                  const selected = selectedSkin === skin.id;
+                  return (
+                    <button
+                      key={skin.id}
+                      onClick={() => applySkin(skin.id)}
+                      disabled={!unlocked}
+                      style={{
+                        width: 128,
+                        padding: 12,
+                        borderRadius: 12,
+                        border: selected ? "2px solid #38bdf8" : "1px solid rgba(255,255,255,0.12)",
+                        background: unlocked
+                          ? skin.id === "aurora"
+                            ? "linear-gradient(135deg, rgba(125, 211, 252, 0.4), rgba(168, 85, 247, 0.4))"
+                            : "rgba(59, 130, 246, 0.18)"
+                          : "rgba(30, 41, 59, 0.7)",
+                        color: "#f8fafc",
+                        opacity: unlocked ? 1 : 0.6,
+                        cursor: unlocked ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      <div style={{ fontWeight: 700 }}>{skin.label}</div>
+                      <div style={{ marginTop: 4, fontSize: 12, color: "#cbd5e1" }}>
+                        {unlocked ? "Unlocked" : "Locked"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
       )}
     </div>
   );
-};
-
-export default SnakeGame;
+}
