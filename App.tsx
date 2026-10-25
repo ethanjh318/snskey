@@ -4,6 +4,8 @@ type Direction = "UP" | "DOWN" | "LEFT" | "RIGHT";
 type Point = { x: number; y: number };
 type PadPosition = "top-left" | "top-right" | "bottom-left" | "bottom-right";
 
+type Skin = "classic" | "aurora";
+
 const GRID_SIZE = 20;
 const CELL_SIZE = 24;
 const INITIAL_SNAKE: Point[] = [
@@ -12,7 +14,7 @@ const INITIAL_SNAKE: Point[] = [
   { x: 8, y: 10 },
 ];
 
-const REDEEM_CODES: Record<string, { type: "points" | "skin"; amount?: number; skin?: string }> = {
+const REDEEM_CODES: Record<string, { type: "points" | "skin"; amount?: number; skin?: Skin }> = {
   "300POINTS": { type: "points", amount: 300 },
   "620POINTS": { type: "points", amount: 620 },
   "AURORA-SECRET": { type: "skin", skin: "aurora" },
@@ -23,6 +25,21 @@ const PAD_POSITIONS: Record<PadPosition, { top?: number; bottom?: number; left?:
   "top-right": { top: 24, right: 24 },
   "bottom-left": { bottom: 24, left: 24 },
   "bottom-right": { bottom: 24, right: 24 },
+};
+
+const SKIN_COLORS: Record<Skin, { head: string; body: string; glow: string; border: string }> = {
+  classic: {
+    head: "#4ade80",
+    body: "#22c55e",
+    glow: "rgba(74, 222, 128, 0.5)",
+    border: "#dc2626",
+  },
+  aurora: {
+    head: "#a5f3fc",
+    body: "#8b5cf6",
+    glow: "rgba(125, 211, 252, 0.8)",
+    border: "#38bdf8",
+  },
 };
 
 function getRandomFood(snake: Point[]): Point {
@@ -54,8 +71,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [redeemInput, setRedeemInput] = useState("");
   const [redeemMessage, setRedeemMessage] = useState("Use a code to earn points or unlock the Aurora skin.");
-  const [unlockedSkins, setUnlockedSkins] = useState<string[]>(["classic"]);
-  const [selectedSkin, setSelectedSkin] = useState("classic");
+  const [unlockedSkins, setUnlockedSkins] = useState<Skin[]>(["classic"]);
+  const [selectedSkin, setSelectedSkin] = useState<Skin>("classic");
 
   const directionRef = useRef<Direction>("RIGHT");
   const foodRef = useRef(food);
@@ -75,7 +92,7 @@ export default function App() {
     setSpeed(170);
   };
 
-  const applySkin = (skin: string) => {
+  const applySkin = (skin: Skin) => {
     if (!unlockedSkins.includes(skin)) return;
     setSelectedSkin(skin);
   };
@@ -198,9 +215,7 @@ export default function App() {
     return () => clearInterval(tick);
   }, [started, gameOver, speed]);
 
-  const snakeColor = selectedSkin === "aurora"
-    ? { head: "#a5f3fc", body: "#8b5cf6", glow: "rgba(125, 211, 252, 0.8)" }
-    : { head: "#4ade80", body: "#22c55e", glow: "rgba(74, 222, 128, 0.5)" };
+  const snakeColor = SKIN_COLORS[selectedSkin];
 
   const cells = [] as Array<{ x: number; y: number; isHead: boolean; isBody: boolean; isFood: boolean }>;
   for (let y = 0; y < GRID_SIZE; y += 1) {
@@ -243,8 +258,8 @@ export default function App() {
             width: GRID_SIZE * CELL_SIZE + 10,
             height: GRID_SIZE * CELL_SIZE + 10,
             background: "#0f172a",
-            border: "4px solid #dc2626",
-            boxShadow: "0 0 14px rgba(220, 38, 38, 0.5)",
+            border: `4px solid ${snakeColor.border}`,
+            boxShadow: `0 0 14px ${snakeColor.glow}`,
             borderRadius: 10,
             position: "relative",
             overflow: "hidden",
@@ -641,10 +656,10 @@ export default function App() {
             <div>
               <div style={{ marginBottom: 10, fontWeight: 700 }}>Skins</div>
               <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                {[
+                {([
                   { id: "classic", label: "Classic" },
                   { id: "aurora", label: "Aurora" },
-                ].map((skin) => {
+                ] as Array<{ id: Skin; label: string }>).map((skin) => {
                   const unlocked = unlockedSkins.includes(skin.id);
                   const selected = selectedSkin === skin.id;
                   return (
