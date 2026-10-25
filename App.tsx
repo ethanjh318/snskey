@@ -325,24 +325,6 @@ export default function App() {
             </div>
           ))}
 
-          {!started && !gameOver && (
-            <div
-              style={{
-                position: "absolute",
-                inset: 0,
-                background: "rgba(15, 23, 42, 0.72)",
-                color: "#f8fafc",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontWeight: 700,
-                letterSpacing: 1,
-              }}
-            >
-              PRESS ANY ARROW KEY
-            </div>
-          )}
-
           {gameOver && (
             <div
               style={{
