@@ -358,7 +358,6 @@ export default function App() {
               }}
             >
               <div style={{ fontSize: 28, marginBottom: 8 }}>Game Over</div>
-              <div style={{ fontSize: 16 }}>Score: {score}</div>
               <button
                 onClick={resetGame}
                 style={{
@@ -383,23 +382,13 @@ export default function App() {
         style={{
           position: "fixed",
           top: 18,
-          left: 18,
           right: 18,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
           zIndex: 5,
           color: "#e2e8f0",
           fontWeight: 700,
           pointerEvents: "none",
         }}
       >
-        <div style={{ pointerEvents: "auto", background: "rgba(15, 23, 42, 0.7)", padding: "8px 12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)" }}>
-          Score: {score}
-        </div>
-        <div style={{ pointerEvents: "auto", background: "rgba(15, 23, 42, 0.7)", padding: "8px 12px", borderRadius: 12, border: "1px solid rgba(255,255,255,0.1)" }}>
-          Bank: {bank}
-        </div>
         <button
           onClick={() => setSettingsOpen(true)}
           style={{
